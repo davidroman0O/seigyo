@@ -44,6 +44,9 @@ type Seigyo[T any] struct {
 	shutdownSent map[string]bool
 	stopped      map[string]bool
 	errored      map[string]bool
+	errCh        chan error
+	closed       bool
+	wg           sync.WaitGroup
 }
 
 // `New` creates a new Controller.
@@ -176,14 +179,14 @@ func (c *Seigyo[T]) RegisterProcess(pid string, config ProcessConfig[T]) error {
 
 // Start initializes and runs all registered processes.
 func (c *Seigyo[T]) Start() chan error {
-	errCh := make(chan error, len(c.processes)) // Buffered to hold errors from all processes.
-	var wg sync.WaitGroup
+	// errCh := make(chan error, len(c.processes)) // Buffered to hold errors from all processes.
+	c.errCh = make(chan error, len(c.processes)) // Buffered to hold errors from all processes.
 
 	for pid, config := range c.processes {
-		wg.Add(1)
+		c.wg.Add(1)
 
 		go func(pid string, config ProcessConfig[T]) {
-			defer wg.Done()
+			defer c.wg.Done()
 
 			shutdownCh := c.shutdownChs[pid]
 			stateGetter := func() T {
@@ -202,7 +205,7 @@ func (c *Seigyo[T]) Start() chan error {
 				log.Println("seding to", targetPid)
 				go func() {
 					if err := c.Send(pid, targetPid, data); err != nil {
-						errCh <- err
+						c.errCh <- err
 					}
 				}()
 			}
@@ -217,7 +220,7 @@ func (c *Seigyo[T]) Start() chan error {
 							if r := recover(); r != nil {
 								lastErr = fmt.Errorf("panic during %s: %v", phaseName, r)
 								if config.ShouldRecover {
-									errCh <- fmt.Errorf("process %s: %w", pid, lastErr)
+									c.errCh <- fmt.Errorf("process %s: %w", pid, lastErr)
 								} else {
 									// If ShouldRecover is false, re-panic after logging the error.
 									panic(r)
@@ -239,6 +242,7 @@ func (c *Seigyo[T]) Start() chan error {
 									c.stateMu.Lock()
 									// Check if shutdownCh has already been closed.
 									if !c.shutdownSent[pid] {
+										fmt.Println("close shutdownCh", pid)
 										close(shutdownCh)
 										c.shutdownSent[pid] = true
 									}
@@ -264,7 +268,7 @@ func (c *Seigyo[T]) Start() chan error {
 			if err := executePhase("initialization", func(ctx context.Context) error {
 				return config.Process.Init(ctx, stateGetter, stateMutator, sender)
 			}, config.InitTimeout, config.InitMaxRetries, config.InitRetryDelay); err != nil {
-				errCh <- fmt.Errorf("process %s: %w", pid, err)
+				c.errCh <- fmt.Errorf("process %s: %w", pid, err)
 				c.stateMu.Lock()
 				c.errored[pid] = true
 				c.stateMu.Unlock()
@@ -273,9 +277,9 @@ func (c *Seigyo[T]) Start() chan error {
 
 			// Run the process with panic recovery, retry, and optional timeout.
 			if err := executePhase("run", func(ctx context.Context) error {
-				return config.Process.Run(ctx, stateGetter, stateMutator, sender, shutdownCh, errCh)
+				return config.Process.Run(ctx, stateGetter, stateMutator, sender, shutdownCh, c.errCh)
 			}, config.RunTimeout, config.RunMaxRetries, config.RunRetryDelay); err != nil {
-				errCh <- fmt.Errorf("process %s: %w", pid, err)
+				c.errCh <- fmt.Errorf("process %s: %w", pid, err)
 				c.stateMu.Lock()
 				c.errored[pid] = true
 				c.stateMu.Unlock()
@@ -285,7 +289,7 @@ func (c *Seigyo[T]) Start() chan error {
 			if err := executePhase("deinitialization", func(ctx context.Context) error {
 				return config.Process.Deinit(ctx, stateGetter, stateMutator, sender)
 			}, config.DeinitTimeout, config.DeinitMaxRetries, config.DeinitRetryDelay); err != nil {
-				errCh <- fmt.Errorf("process %s: %w", pid, err)
+				c.errCh <- fmt.Errorf("process %s: %w", pid, err)
 				c.stateMu.Lock()
 				c.errored[pid] = true
 				c.stateMu.Unlock()
@@ -299,12 +303,13 @@ func (c *Seigyo[T]) Start() chan error {
 	}
 
 	// Close error channel once all processes have finished.
-	go func() {
-		wg.Wait()
-		close(errCh)
-	}()
+	c.wg.Wait()
+	if !c.closed {
+		c.closed = true
+		close(c.errCh)
+	}
 
-	return errCh
+	return c.errCh
 }
 
 // Stop stops all registered processes.
@@ -317,5 +322,9 @@ func (c *Seigyo[T]) Stop() {
 			close(shutdownCh)
 			c.shutdownSent[pid] = true
 		}
+	}
+	if !c.closed {
+		c.closed = true
+		close(c.errCh)
 	}
 }

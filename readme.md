@@ -60,7 +60,7 @@ func (p *MyProcess) Received(pid string, data interface{}) error {
 }
 
 func main() {
-	controller := seigyo.NewController(nil)
+	controller := seigyo.New(nil)
 	process := &MyProcess{}
 
 	// Register and start your process here...
