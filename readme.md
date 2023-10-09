@@ -2,8 +2,6 @@
 
 Seigyo, deriving from the Japanese word for "Control" (制御), is a Go module meticulously crafted to orchestrate and manage the lifecycle of concurrent processes. It ensures smooth communication and control across various application workflows, providing a robust foundation for building reliable concurrent applications.
 
-![Seigyo Logo](path-to-your-logo-if-available)
-
 ## Features
 
 - **Process Lifecycle Management**: Define, initialize, run, and deinitialize processes with ease.
