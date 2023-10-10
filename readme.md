@@ -85,6 +85,8 @@ func main() {
 
 Detailed documentation can be found at [GoDoc: Seigyo](https://pkg.go.dev/github.com/davidroman0O/seigyo).
 
+If you need some examples, you [look at the Seigyo example repository](https://github.com/davidroman0O/seigyo-examples).
+
 ## Contributing
 
 We welcome contributions from the community! Please read our [Contributing Guide](CONTRIBUTING.md) for more details on how to contribute to Seigyo.
