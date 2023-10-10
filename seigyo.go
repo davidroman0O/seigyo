@@ -12,9 +12,22 @@ import (
 // Process is an interface that describes a generic process with lifecycle methods
 // and communication capabilities.
 type Process[T any] interface {
-	Init(ctx context.Context, stateGetter func() T, stateMutator func(mutateFunc func(T) T), sender func(pid string, data interface{})) error
-	Run(ctx context.Context, stateGetter func() T, stateMutator func(mutateFunc func(T) T), sender func(pid string, data interface{}), shutdownCh <-chan struct{}, errCh chan<- error) error
-	Deinit(ctx context.Context, stateGetter func() T, stateMutator func(mutateFunc func(T) T), sender func(pid string, data interface{})) error
+	Init(ctx context.Context,
+		stateGetter func() T,
+		stateMutator func(mutateFunc func(T) T),
+		sender func(pid string,
+			data interface{})) error
+	Run(ctx context.Context,
+		stateGetter func() T,
+		stateMutator func(mutateFunc func(T) T),
+		sender func(pid string, data interface{}),
+		shutdownCh chan struct{},
+		errCh chan<- error) error
+	Deinit(ctx context.Context,
+		stateGetter func() T,
+		stateMutator func(mutateFunc func(T) T),
+		sender func(pid string,
+			data interface{})) error
 	Received(pid string, data interface{}) error
 }
 
@@ -179,7 +192,6 @@ func (c *Seigyo[T]) RegisterProcess(pid string, config ProcessConfig[T]) error {
 
 // Start initializes and runs all registered processes.
 func (c *Seigyo[T]) Start() chan error {
-	// errCh := make(chan error, len(c.processes)) // Buffered to hold errors from all processes.
 	c.errCh = make(chan error, len(c.processes)) // Buffered to hold errors from all processes.
 
 	for pid, config := range c.processes {
@@ -222,7 +234,6 @@ func (c *Seigyo[T]) Start() chan error {
 								if config.ShouldRecover {
 									c.errCh <- fmt.Errorf("process %s: %w", pid, lastErr)
 								} else {
-									// If ShouldRecover is false, re-panic after logging the error.
 									panic(r)
 								}
 							}
@@ -234,23 +245,6 @@ func (c *Seigyo[T]) Start() chan error {
 							var cancel func()
 							ctx, cancel = context.WithTimeout(ctx, timeout)
 							defer cancel()
-
-							// Trigger the shutdown channel of the process when the context is done.
-							go func() {
-								select {
-								case <-ctx.Done():
-									c.stateMu.Lock()
-									// Check if shutdownCh has already been closed.
-									if !c.shutdownSent[pid] {
-										fmt.Println("close shutdownCh", pid)
-										close(shutdownCh)
-										c.shutdownSent[pid] = true
-									}
-									c.stateMu.Unlock()
-								case <-shutdownCh:
-									// Prevent goroutine leak if shutdownCh is closed elsewhere.
-								}
-							}()
 						}
 
 						lastErr = phaseFunc(ctx)
@@ -303,11 +297,13 @@ func (c *Seigyo[T]) Start() chan error {
 	}
 
 	// Close error channel once all processes have finished.
-	c.wg.Wait()
-	if !c.closed {
-		c.closed = true
-		close(c.errCh)
-	}
+	go func() {
+		c.wg.Wait()
+		if !c.closed {
+			c.closed = true
+			close(c.errCh)
+		}
+	}()
 
 	return c.errCh
 }

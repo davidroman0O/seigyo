@@ -44,7 +44,7 @@ func (p *MyProcess) Init(ctx context.Context, stateGetter func() interface{}, st
 	return nil
 }
 
-func (p *MyProcess) Run(ctx context.Context, stateGetter func() interface{}, stateMutator func(mutateFunc func(interface{}) interface{}), sender func(pid string, data interface{}), shutdownCh <-chan struct{}, errCh chan<- error) error {
+func (p *MyProcess) Run(ctx context.Context, stateGetter func() interface{}, stateMutator func(mutateFunc func(interface{}) interface{}), sender func(pid string, data interface{}), shutdownCh chan struct{}, errCh chan<- error) error {
 	fmt.Println("Process Running")
 	return nil
 }

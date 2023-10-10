@@ -12,7 +12,6 @@ import (
 type Global struct{}
 
 func main() {
-
 	ctrl := seigyo.New(&Global{})
 	ctrl.RegisterProcess("ping", seigyo.ProcessConfig[*Global]{
 		Process: &PingPongProcess{pid: "ping"},
@@ -29,13 +28,13 @@ func main() {
 	go func() {
 		<-sigCh // Wait for SIGINT
 		ctrl.Stop()
-		fmt.Println("stopped")
+		fmt.Println("stopped signal")
 	}()
 
 	for err := range errCh {
 		fmt.Println(err)
 	}
-	fmt.Println("finished communication")
+	fmt.Println("finished communication signal")
 }
 
 // ExampleProcess is a simple implementation of the Process interface.
@@ -61,6 +60,8 @@ func (p *PingPongProcess) Run(ctx context.Context, stateGetter func() *Global, s
 	sender(target, "hello")
 
 	errCh <- fmt.Errorf("some error")
+
+	<-shutdownCh
 
 	fmt.Println(p.pid, "finished")
 

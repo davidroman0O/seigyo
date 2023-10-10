@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
 	"testing"
-	"time"
 )
 
 func TestBasicProcess(t *testing.T) {
@@ -17,15 +18,17 @@ func TestBasicProcess(t *testing.T) {
 
 	errCh := ctrl.Start()
 
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+
 	go func() {
-		time.Sleep(time.Second * 5)
+		<-sigCh // Wait for SIGINT
 		ctrl.Stop()
+		fmt.Println("stopped")
 	}()
 
 	for err := range errCh {
-		if err != nil {
-			fmt.Println(err)
-		}
+		fmt.Println(err)
 	}
 }
 
@@ -61,7 +64,7 @@ func (p *BasicProcess) Init(ctx context.Context, stateGetter func() *GlobalState
 }
 
 // Run runs the process.
-func (p *BasicProcess) Run(ctx context.Context, stateGetter func() *GlobalState, stateMutator func(mutateFunc func(*GlobalState) *GlobalState), sender func(pid string, data interface{}), shutdownCh <-chan struct{}, errCh chan<- error) error {
+func (p *BasicProcess) Run(ctx context.Context, stateGetter func() *GlobalState, stateMutator func(mutateFunc func(*GlobalState) *GlobalState), sender func(pid string, data interface{}), shutdownCh chan struct{}, errCh chan<- error) error {
 	log.Println(p.pid, "running")
 	for i := 0; i < 5; i++ {
 		log.Println(p.pid, "doing work", i)
