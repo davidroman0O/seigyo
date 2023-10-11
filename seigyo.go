@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-/// TODO: be able to start/stop process on the fly just like erlang
-
 // Process is an interface that describes a generic process with lifecycle methods
 // and communication capabilities.
 type Process[T any] interface {
