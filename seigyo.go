@@ -108,6 +108,20 @@ func (c *Seigyo[T]) State(pid string) (bool, bool, bool, error) {
 	return shutdownSent, stopped, errored, nil
 }
 
+func (c *Seigyo[T]) Process(pid string) (*Process[T], error) {
+
+	var pp ProcessConfig[T]
+	var exists bool
+
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if pp, exists = c.processes[pid]; exists {
+		return &pp.Process, nil
+	}
+
+	return nil, fmt.Errorf("process not found")
+}
+
 func (c *Seigyo[T]) Processes() []string {
 
 	c.stateMu.Lock()
