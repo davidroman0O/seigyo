@@ -389,11 +389,6 @@ func (c *Seigyo[T]) Stop() {
 	}
 	c.stateMu.Unlock()
 
-	if !c.closed {
-		c.closed = true
-		close(c.errCh)
-	}
-
 	// Wait for all processes to finish shutting down.
 	var wg sync.WaitGroup
 	for pid := range c.processes {
@@ -412,4 +407,9 @@ func (c *Seigyo[T]) Stop() {
 		}(pid)
 	}
 	wg.Wait()
+
+	if !c.closed {
+		c.closed = true
+		close(c.errCh)
+	}
 }
