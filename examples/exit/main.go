@@ -41,7 +41,7 @@ func (p *PingProcess) Init(ctx context.Context, stateGetter func() *Global, stat
 	return nil
 }
 
-func (p *PingProcess) Run(ctx context.Context, stateGetter func() *Global, stateMutator func(mutateFunc func(*Global) *Global), sender func(pid string, data interface{}), shutdownCh chan struct{}, errCh chan<- error) error {
+func (p *PingProcess) Run(ctx context.Context, stateGetter func() *Global, stateMutator func(mutateFunc func(*Global) *Global), sender func(pid string, data interface{}), shutdownCh chan struct{}, errCh chan<- error, selfShutdown func()) error {
 	fmt.Println(p.pid, "running")
 
 	go func() {
@@ -96,7 +96,7 @@ func (p *PongProcess) Init(ctx context.Context, stateGetter func() *Global, stat
 	return nil
 }
 
-func (p *PongProcess) Run(ctx context.Context, stateGetter func() *Global, stateMutator func(mutateFunc func(*Global) *Global), sender func(pid string, data interface{}), shutdownCh chan struct{}, errCh chan<- error) error {
+func (p *PongProcess) Run(ctx context.Context, stateGetter func() *Global, stateMutator func(mutateFunc func(*Global) *Global), sender func(pid string, data interface{}), shutdownCh chan struct{}, errCh chan<- error, selfShutdown func()) error {
 	fmt.Println(p.pid, "running")
 	sender("ping", "die")
 

@@ -64,7 +64,7 @@ func (p *BasicProcess) Init(ctx context.Context, stateGetter func() *GlobalState
 }
 
 // Run runs the process.
-func (p *BasicProcess) Run(ctx context.Context, stateGetter func() *GlobalState, stateMutator func(mutateFunc func(*GlobalState) *GlobalState), sender func(pid string, data interface{}), shutdownCh chan struct{}, errCh chan<- error) error {
+func (p *BasicProcess) Run(ctx context.Context, stateGetter func() *GlobalState, stateMutator func(mutateFunc func(*GlobalState) *GlobalState), sender func(pid string, data interface{}), shutdownCh chan struct{}, errCh chan<- error, selfShutdown func()) error {
 	log.Println(p.pid, "running")
 	for i := 0; i < 5; i++ {
 		log.Println(p.pid, "doing work", i)

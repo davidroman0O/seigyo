@@ -49,7 +49,7 @@ func (p *PingPongProcess) Init(ctx context.Context, stateGetter func() *Global, 
 	return nil
 }
 
-func (p *PingPongProcess) Run(ctx context.Context, stateGetter func() *Global, stateMutator func(mutateFunc func(*Global) *Global), sender func(pid string, data interface{}), shutdownCh chan struct{}, errCh chan<- error) error {
+func (p *PingPongProcess) Run(ctx context.Context, stateGetter func() *Global, stateMutator func(mutateFunc func(*Global) *Global), sender func(pid string, data interface{}), shutdownCh chan struct{}, errCh chan<- error, selfShutdown func()) error {
 	fmt.Println(p.pid, "running")
 
 	var target string

@@ -73,7 +73,7 @@ func (p *BasicProcess) Init(ctx context.Context, stateGetter func() *Global, sta
 	return nil
 }
 
-func (p *BasicProcess) Run(ctx context.Context, stateGetter func() *Global, stateMutator func(mutateFunc func(*Global) *Global), sender func(pid string, data interface{}), shutdownCh chan struct{}, errCh chan<- error) error {
+func (p *BasicProcess) Run(ctx context.Context, stateGetter func() *Global, stateMutator func(mutateFunc func(*Global) *Global), sender func(pid string, data interface{}), shutdownCh chan struct{}, errCh chan<- error, selfShutdown func()) error {
 	log.Println(p.pid, "running")
 
 	for i := 0; i < 5; i++ {

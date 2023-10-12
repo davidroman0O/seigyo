@@ -22,7 +22,9 @@ type Process[T any] interface {
 		stateMutator func(mutateFunc func(T) T),
 		sender func(pid string, data interface{}),
 		shutdownCh chan struct{},
-		errCh chan<- error) error
+		errCh chan<- error,
+		selfShutdown func(),
+	) error
 	Deinit(ctx context.Context,
 		stateGetter func() T,
 		stateMutator func(mutateFunc func(T) T),
@@ -286,6 +288,10 @@ func (c *Seigyo[T]) startProcess(pid string, config ProcessConfig[T]) {
 		}()
 	}
 
+	// Create a cancelable context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // Ensure resources are cleaned up.
+
 	// Define a helper function to execute a phase with optional panic recovery, retry, and timeout.
 	executePhase := func(phaseName string, phaseFunc func(context.Context) error, timeout time.Duration, maxRetries int, retryDelay time.Duration) error {
 		retries := 0
@@ -304,14 +310,16 @@ func (c *Seigyo[T]) startProcess(pid string, config ProcessConfig[T]) {
 				}()
 
 				// Create a context with an optional timeout.
-				ctx := context.Background()
+				var phaseCtx context.Context
 				if timeout > 0 {
-					var cancel func()
-					ctx, cancel = context.WithTimeout(ctx, timeout)
-					defer cancel()
+					var cancelTimeout func()
+					phaseCtx, cancelTimeout = context.WithTimeout(ctx, timeout)
+					defer cancelTimeout()
+				} else {
+					phaseCtx = ctx
 				}
 
-				lastErr = phaseFunc(ctx)
+				lastErr = phaseFunc(phaseCtx)
 			}()
 			if lastErr == nil {
 				return nil
@@ -335,7 +343,7 @@ func (c *Seigyo[T]) startProcess(pid string, config ProcessConfig[T]) {
 
 	// Run the process with panic recovery, retry, and optional timeout.
 	if err := executePhase("run", func(ctx context.Context) error {
-		return config.Process.Run(ctx, stateGetter, stateMutator, sender, shutdownCh, c.errCh)
+		return config.Process.Run(ctx, stateGetter, stateMutator, sender, shutdownCh, c.errCh, cancel)
 	}, config.RunTimeout, config.RunMaxRetries, config.RunRetryDelay); err != nil {
 		c.errCh <- fmt.Errorf("process %s: %w", pid, err)
 		c.stateMu.Lock()
