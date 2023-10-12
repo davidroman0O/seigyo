@@ -380,7 +380,6 @@ func (c *Seigyo[T]) StopProcess(pid string) error {
 // Stop stops all registered processes.
 func (c *Seigyo[T]) Stop() {
 	c.stateMu.Lock()
-	defer c.stateMu.Unlock()
 	// Signal all processes to shut down.
 	for pid, shutdownCh := range c.shutdownChs {
 		if !c.shutdownSent[pid] {
@@ -388,8 +387,29 @@ func (c *Seigyo[T]) Stop() {
 			c.shutdownSent[pid] = true
 		}
 	}
+	c.stateMu.Unlock()
+
 	if !c.closed {
 		c.closed = true
 		close(c.errCh)
 	}
+
+	// Wait for all processes to finish shutting down.
+	var wg sync.WaitGroup
+	for pid := range c.processes {
+		wg.Add(1)
+		go func(pid string) {
+			defer wg.Done()
+			for {
+				c.stateMu.Lock()
+				stopped := c.stopped[pid]
+				c.stateMu.Unlock()
+				if stopped {
+					break
+				}
+				time.Sleep(10 * time.Millisecond) // Polling interval
+			}
+		}(pid)
+	}
+	wg.Wait()
 }
