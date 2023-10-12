@@ -108,6 +108,18 @@ func (c *Seigyo[T]) State(pid string) (bool, bool, bool, error) {
 	return shutdownSent, stopped, errored, nil
 }
 
+func (c *Seigyo[T]) Processes() []string {
+
+	c.stateMu.Lock()
+	keys := make([]string, 0, len(c.processes))
+	for k := range c.processes {
+		keys = append(keys, k)
+	}
+	c.stateMu.Unlock()
+
+	return keys
+}
+
 func (c *Seigyo[T]) Send(frompid string, pid string, data interface{}) error {
 
 	c.stateMu.Lock()
