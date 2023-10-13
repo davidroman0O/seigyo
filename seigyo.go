@@ -62,11 +62,24 @@ type Seigyo[T any] struct {
 	errCh        chan error
 	closed       bool
 	wg           sync.WaitGroup
+
+	closeFn func()
+}
+
+type SeigyoConfiguration[T any] func(s *Seigyo[T])
+
+func WithCloseFn[T any](closeFn func()) SeigyoConfiguration[T] {
+	return func(s *Seigyo[T]) {
+		s.closeFn = closeFn
+	}
 }
 
 // `New` creates a new Controller.
-func New[T any](initialState T) *Seigyo[T] {
-	return &Seigyo[T]{
+func New[T any](
+	initialState T,
+	cfgs ...SeigyoConfiguration[T],
+) *Seigyo[T] {
+	data := &Seigyo[T]{
 		processes:    make(map[string]ProcessConfig[T]),
 		shutdownChs:  make(map[string]chan struct{}),
 		shutdownSent: make(map[string]bool),
@@ -74,6 +87,12 @@ func New[T any](initialState T) *Seigyo[T] {
 		errored:      make(map[string]bool),
 		state:        initialState,
 	}
+
+	for i := 0; i < len(cfgs); i++ {
+		cfgs[i](data)
+	}
+
+	return data
 }
 
 func (c *Seigyo[T]) State(pid string) (bool, bool, bool, error) {
@@ -441,6 +460,10 @@ func (c *Seigyo[T]) Stop() {
 		}(pid)
 	}
 	wg.Wait()
+
+	if c.closeFn != nil {
+		c.closeFn()
+	}
 
 	if !c.closed {
 		c.closed = true
