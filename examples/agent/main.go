@@ -62,9 +62,9 @@ func main() {
 	// Notify sigCh when receiving SIGINT or SIGTERM signals.
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	agent := seigyo.New[*Global](&Global{})
+	agent := seigyo.New[*Global, interface{}](&Global{})
 
-	agent.RegisterProcess("agent", seigyo.ProcessConfig[*Global]{
+	agent.RegisterProcess("agent", seigyo.ProcessConfig[*Global, interface{}]{
 		Process: &AgentProcess{
 			pid: "agent",
 		},

@@ -13,11 +13,11 @@ type Global struct{}
 
 func main() {
 
-	ctrl := seigyo.New(&Global{})
-	ctrl.RegisterProcess("ping", seigyo.ProcessConfig[*Global]{
+	ctrl := seigyo.New[*Global, interface{}](&Global{})
+	ctrl.RegisterProcess("ping", seigyo.ProcessConfig[*Global, interface{}]{
 		Process: &PingPongProcess{pid: "ping"},
 	})
-	ctrl.RegisterProcess("pong", seigyo.ProcessConfig[*Global]{
+	ctrl.RegisterProcess("pong", seigyo.ProcessConfig[*Global, interface{}]{
 		Process: &PingPongProcess{pid: "pong"},
 	})
 

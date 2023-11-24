@@ -12,8 +12,8 @@ type Global struct{}
 
 func main() {
 
-	ctrl := seigyo.New(&Global{})
-	ctrl.RegisterProcess("basic", seigyo.ProcessConfig[*Global]{
+	ctrl := seigyo.New[*Global, interface{}](&Global{})
+	ctrl.RegisterProcess("basic", seigyo.ProcessConfig[*Global, interface{}]{
 		Process: &BasicProcess{pid: "basic"},
 	})
 

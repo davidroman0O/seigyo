@@ -11,16 +11,16 @@ import (
 
 // Process is an interface that describes a generic process with lifecycle methods
 // and communication capabilities.
-type Process[T any] interface {
+type Process[T any, D any] interface {
 	Init(ctx context.Context,
 		stateGetter func() T,
 		stateMutator func(mutateFunc func(T) T),
 		sender func(pid string,
-			data interface{})) error
+			data D)) error
 	Run(ctx context.Context,
 		stateGetter func() T,
 		stateMutator func(mutateFunc func(T) T),
-		sender func(pid string, data interface{}),
+		sender func(pid string, data D),
 		shutdownCh chan struct{},
 		errCh chan<- error,
 		selfShutdown func(),
@@ -29,12 +29,12 @@ type Process[T any] interface {
 		stateGetter func() T,
 		stateMutator func(mutateFunc func(T) T),
 		sender func(pid string,
-			data interface{})) error
-	Received(pid string, data interface{}) error
+			data D)) error
+	Received(pid string, data D) error
 }
 
-type ProcessConfig[T any] struct {
-	Process               Process[T]
+type ProcessConfig[T any, S any] struct {
+	Process               Process[T, S]
 	ShouldRecover         bool
 	Timeout               time.Duration // General timeout for all phases if specific ones are not set.
 	InitTimeout           time.Duration
@@ -51,8 +51,8 @@ type ProcessConfig[T any] struct {
 }
 
 // Seigyo manages processes, global state, and communication between processes.
-type Seigyo[T any] struct {
-	processes    map[string]ProcessConfig[T]
+type Seigyo[T any, S any] struct {
+	processes    map[string]ProcessConfig[T, S]
 	state        T
 	stateMu      sync.Mutex
 	shutdownChs  map[string]chan struct{}
@@ -62,25 +62,24 @@ type Seigyo[T any] struct {
 	errCh        chan error
 	closed       bool
 	wg           sync.WaitGroup
-
-	closeFn func()
+	closeFn      func()
 }
 
-type SeigyoConfiguration[T any] func(s *Seigyo[T])
+type SeigyoConfiguration[T any, S any] func(s *Seigyo[T, S])
 
-func WithCloseFn[T any](closeFn func()) SeigyoConfiguration[T] {
-	return func(s *Seigyo[T]) {
+func WithCloseFn[T any, S any](closeFn func()) SeigyoConfiguration[T, S] {
+	return func(s *Seigyo[T, S]) {
 		s.closeFn = closeFn
 	}
 }
 
 // `New` creates a new Controller.
-func New[T any](
+func New[T any, S any](
 	initialState T,
-	cfgs ...SeigyoConfiguration[T],
-) *Seigyo[T] {
-	data := &Seigyo[T]{
-		processes:    make(map[string]ProcessConfig[T]),
+	cfgs ...SeigyoConfiguration[T, S],
+) *Seigyo[T, S] {
+	data := &Seigyo[T, S]{
+		processes:    make(map[string]ProcessConfig[T, S]),
 		shutdownChs:  make(map[string]chan struct{}),
 		shutdownSent: make(map[string]bool),
 		stopped:      make(map[string]bool),
@@ -95,7 +94,7 @@ func New[T any](
 	return data
 }
 
-func (c *Seigyo[T]) State(pid string) (bool, bool, bool, error) {
+func (c *Seigyo[T, S]) State(pid string) (bool, bool, bool, error) {
 
 	var exists bool
 
@@ -127,9 +126,9 @@ func (c *Seigyo[T]) State(pid string) (bool, bool, bool, error) {
 	return shutdownSent, stopped, errored, nil
 }
 
-func (c *Seigyo[T]) Process(pid string) (*Process[T], error) {
+func (c *Seigyo[T, S]) Process(pid string) (*Process[T, S], error) {
 
-	var pp ProcessConfig[T]
+	var pp ProcessConfig[T, S]
 	var exists bool
 
 	c.stateMu.Lock()
@@ -141,7 +140,7 @@ func (c *Seigyo[T]) Process(pid string) (*Process[T], error) {
 	return nil, fmt.Errorf("process not found")
 }
 
-func (c *Seigyo[T]) Processes() []string {
+func (c *Seigyo[T, S]) Processes() []string {
 
 	c.stateMu.Lock()
 	keys := make([]string, 0, len(c.processes))
@@ -153,7 +152,7 @@ func (c *Seigyo[T]) Processes() []string {
 	return keys
 }
 
-func (c *Seigyo[T]) Send(frompid string, pid string, data interface{}) error {
+func (c *Seigyo[T, S]) Send(frompid string, pid string, data S) error {
 
 	c.stateMu.Lock()
 	targetProcessConfig, exists := c.processes[pid]
@@ -193,7 +192,7 @@ func (c *Seigyo[T]) Send(frompid string, pid string, data interface{}) error {
 }
 
 // RegisterProcess registers a new process with the controller.
-func (c *Seigyo[T]) RegisterProcess(pid string, config ProcessConfig[T]) error {
+func (c *Seigyo[T, S]) RegisterProcess(pid string, config ProcessConfig[T, S]) error {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 
@@ -238,7 +237,7 @@ func (c *Seigyo[T]) RegisterProcess(pid string, config ProcessConfig[T]) error {
 }
 
 // Start initializes and runs all registered processes.
-func (c *Seigyo[T]) Start() chan error {
+func (c *Seigyo[T, S]) Start() chan error {
 	c.errCh = make(chan error, len(c.processes)*2) // Buffered to hold errors from all processes.
 
 	for pid, config := range c.processes {
@@ -258,7 +257,7 @@ func (c *Seigyo[T]) Start() chan error {
 	return c.errCh
 }
 
-func (c *Seigyo[T]) AddAndStart(pid string, config ProcessConfig[T]) error {
+func (c *Seigyo[T, S]) AddAndStart(pid string, config ProcessConfig[T, S]) error {
 	c.wg.Add(1)
 
 	c.stateMu.Lock()
@@ -308,7 +307,7 @@ func (c *Seigyo[T]) AddAndStart(pid string, config ProcessConfig[T]) error {
 	return nil
 }
 
-func (c *Seigyo[T]) startProcess(pid string, config ProcessConfig[T]) {
+func (c *Seigyo[T, S]) startProcess(pid string, config ProcessConfig[T, S]) {
 	defer c.wg.Done()
 
 	shutdownCh := c.shutdownChs[pid]
@@ -324,7 +323,7 @@ func (c *Seigyo[T]) startProcess(pid string, config ProcessConfig[T]) {
 		c.state = mutateFunc(c.state)
 	}
 
-	sender := func(targetPid string, data interface{}) {
+	sender := func(targetPid string, data S) {
 		log.Println("sending to", targetPid)
 		go func() {
 			if err := c.Send(pid, targetPid, data); err != nil {
@@ -412,7 +411,7 @@ func (c *Seigyo[T]) startProcess(pid string, config ProcessConfig[T]) {
 	c.stateMu.Unlock()
 }
 
-func (c *Seigyo[T]) StopProcess(pid string) error {
+func (c *Seigyo[T, S]) StopProcess(pid string) error {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 
@@ -431,7 +430,7 @@ func (c *Seigyo[T]) StopProcess(pid string) error {
 }
 
 // Stop stops all registered processes.
-func (c *Seigyo[T]) Stop() {
+func (c *Seigyo[T, S]) Stop() {
 	c.stateMu.Lock()
 	// Signal all processes to shut down.
 	for pid, shutdownCh := range c.shutdownChs {

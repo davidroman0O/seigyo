@@ -13,8 +13,8 @@ type Global struct{}
 
 func main() {
 
-	ctrl := seigyo.New(&Global{})
-	ctrl.RegisterProcess("basic", seigyo.ProcessConfig[*Global]{
+	ctrl := seigyo.New[*Global, interface{}](&Global{})
+	ctrl.RegisterProcess("basic", seigyo.ProcessConfig[*Global, interface{}]{
 		Process: &BasicProcess{pid: "basic"},
 	})
 
@@ -22,7 +22,7 @@ func main() {
 
 	go func() {
 		// Add and start a new process on the fly.
-		if err := ctrl.AddAndStart("newProcess", seigyo.ProcessConfig[*Global]{
+		if err := ctrl.AddAndStart("newProcess", seigyo.ProcessConfig[*Global, interface{}]{
 			Process: &BasicProcess{pid: "newProcess"},
 		}); err != nil {
 			fmt.Println("Error starting new process:", err)

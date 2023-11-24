@@ -10,9 +10,9 @@ import (
 )
 
 func TestBasicProcess(t *testing.T) {
-	ctrl := New(&GlobalState{})
+	ctrl := New[*GlobalState, interface{}](&GlobalState{})
 
-	ctrl.RegisterProcess("basic", ProcessConfig[*GlobalState]{
+	ctrl.RegisterProcess("basic", ProcessConfig[*GlobalState, interface{}]{
 		Process: &BasicProcess{},
 	})
 
