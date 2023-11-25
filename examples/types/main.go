@@ -14,17 +14,13 @@ type Global struct{}
 type MsgPing string
 type MsgPong string
 
-type Messages interface {
-	MsgPing | MsgPong
-}
-
 func main() {
 
-	ctrl := seigyo.New[*Global, Messages](&Global{})
-	ctrl.RegisterProcess("ping", seigyo.ProcessConfig[*Global, Messages]{
+	ctrl := seigyo.New[*Global, interface{}](&Global{})
+	ctrl.RegisterProcess("ping", seigyo.ProcessConfig[*Global, interface{}]{
 		Process: &PingPongProcess{pid: "ping"},
 	})
-	ctrl.RegisterProcess("pong", seigyo.ProcessConfig[*Global, Messages]{
+	ctrl.RegisterProcess("pong", seigyo.ProcessConfig[*Global, interface{}]{
 		Process: &PingPongProcess{pid: "pong"},
 	})
 
@@ -59,13 +55,13 @@ func (p *PingPongProcess) Init(ctx context.Context, stateGetter func() *Global, 
 func (p *PingPongProcess) Run(ctx context.Context, stateGetter func() *Global, stateMutator func(mutateFunc func(*Global) *Global), sender func(pid string, data interface{}), shutdownCh chan struct{}, errCh chan<- error, selfShutdown func()) error {
 	fmt.Println(p.pid, "running")
 
-	var target string
 	if p.pid == "ping" {
-		target = "pong"
+		target := MsgPong("pong")
+		sender(string(target), target)
 	} else {
-		target = "ping"
+		target := MsgPing("ping")
+		sender(string(target), target)
 	}
-	sender(target, "hello")
 
 	errCh <- fmt.Errorf("some error")
 
@@ -83,5 +79,9 @@ func (p *PingPongProcess) Deinit(ctx context.Context, stateGetter func() *Global
 // Received handles data received from another process.
 func (p *PingPongProcess) Received(pid string, data interface{}) error {
 	fmt.Println(p.pid, "received data from", pid, ":", data)
+	switch data.(type) {
+	case MsgPing:
+	case MsgPong:
+	}
 	return nil
 }
