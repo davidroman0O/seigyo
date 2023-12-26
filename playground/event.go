@@ -11,6 +11,16 @@ import (
 
 // TODO @droman: i could have phases in which the event is processed and vetted, you could have Publish (queue -> post-process -> sub | internal), Trigger (queue -> post-process -> sub | internal), ImmediatePublish (queue -> sub), ImmediateTrigger (queue -> sub)
 
+// TODO @droman: have dynamic resize to listen in a goroutine if there is activity and have a delta to know when to downsize
+type Mediator struct {
+	mu          sync.Mutex
+	ctx         context.Context
+	cancel      context.CancelFunc
+	queue       *CircularBuffer // we should have multiple circular buffers
+	subscribers []*Subscriber
+	getID       func() (string, error)
+}
+
 type Event[EK any] struct {
 	ID        EventID
 	CreatedAt EventCreated
@@ -36,76 +46,6 @@ var EventNone Event[EventKind] = Event[EventKind]{
 	Info: InfoNone,
 	Data: nil,
 	// what about kind?
-}
-
-type SubscriberID string
-
-type Subscriber struct {
-	ID           SubscriberID
-	InterestedIn map[EventKindName]EventKind
-	Channel      chan Event[interface{}]
-	mu           sync.Mutex
-}
-
-type OptionSubscriber func(s *Subscriber) error
-
-func OptionSubscriberID(id string) OptionSubscriber {
-	return func(s *Subscriber) error {
-		s.ID = SubscriberID(id)
-		return nil
-	}
-}
-
-func OptionSubscriberInterestedIn(es ...EventKind) OptionSubscriber {
-	return func(s *Subscriber) error {
-		for i := 0; i < len(es); i++ {
-			s.InterestedIn[es[i].Info] = es[i]
-		}
-		return nil
-	}
-}
-
-func NewSubscriber(opts ...OptionSubscriber) (*Subscriber, error) {
-	sub := Subscriber{
-		InterestedIn: make(map[EventKindName]EventKind),
-		Channel:      make(chan Event[interface{}]),
-	}
-	for i := 0; i < len(opts); i++ {
-		if err := opts[i](&sub); err != nil {
-			return nil, err
-		}
-	}
-	if sub.ID == "" {
-		var id string
-		var err error
-		if id, err = getID(); err != nil {
-			return nil, err
-		}
-		sub.ID = SubscriberID(id)
-	}
-	return &sub, nil
-}
-
-// `Register` dynamically a new event to listen to
-func (s *Subscriber) Register(kind EventKind) (EventID, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.InterestedIn[kind.Info] = kind
-	return kind.ID, nil
-}
-
-// TODO @droman: have dynamic resize to listen in a goroutine if there is activity and have a delta to know when to downsize
-type Mediator struct {
-	mu     sync.Mutex
-	ctx    context.Context
-	cancel context.CancelFunc
-	// kinds  map[EventKindName]EventKind
-	queue CircularBuffer
-	// sub      chan Event[interface{}]
-	subscribers []*Subscriber
-	// closed      bool
-	getID func() (string, error)
-	// consumer func(subE Event[interface{}])
 }
 
 type EventAnonymous interface{}
@@ -168,7 +108,6 @@ func OptionMediatorSubscribers(subs ...OptionMediatorSub) OptionMediator {
 			}
 			s.subscribers = append(s.subscribers, sub)
 		}
-
 		return nil
 	}
 }
@@ -213,7 +152,7 @@ func NewMediator(ctx context.Context, opts ...OptionMediator) (*Mediator, error)
 		ctx:         ctx,
 		cancel:      cancel,
 		subscribers: []*Subscriber{},
-		queue:       *NewCircularBuffer(100),
+		queue:       NewCircularBuffer(100),
 		getID:       getID,
 	}
 	for i := 0; i < len(opts); i++ {
@@ -234,9 +173,19 @@ func (s *Mediator) AddSubscriber(sub *Subscriber) {
 	s.subscribers = append(s.subscribers, sub)
 }
 
+// `tranformKind` allow us to move the data to another container to give more room to flexibility to the subscriber
+func (s *Mediator) tranformKind(event Event[EventKind]) Event[interface{}] {
+	e := Event[interface{}]{
+		ID:        event.ID,
+		CreatedAt: event.CreatedAt,
+		Info:      event.Info,
+		Kind:      event.Kind,
+		Data:      event.Data,
+	}
+	return e
+}
+
 func (s *Mediator) dispatch() {
-	var now time.Time
-	var e Event[interface{}]
 	// fmt.Println("mediator started")
 	for {
 		select {
@@ -245,7 +194,7 @@ func (s *Mediator) dispatch() {
 			return
 		default:
 			// TODO @droman: we could have multiple queues on different goroutine that all know the different subscribers, it's just they all dispatch all events constantly to increase the i/o
-
+			// TODO @droman: we need to "interrupt" or give room to other goroutines
 			if !s.queue.IsEmpty() {
 				// fmt.Println("mediator queue not empty")
 				event, err := s.queue.Dequeue()
@@ -254,13 +203,8 @@ func (s *Mediator) dispatch() {
 					continue
 				}
 				// fmt.Println("mediator dequeued")
-				now = time.Now()
-				e = Event[interface{}]{
-					CreatedAt: EventCreated(now),
-					Info:      e.Info,
-					Kind:      event.Kind,
-					Data:      event.Data,
-				}
+				e := s.tranformKind(event)
+				// now let see what are we dealing with
 				switch k := e.Kind.(type) {
 				case EventKind:
 					switch internal := k.Data.(type) {
@@ -271,11 +215,11 @@ func (s *Mediator) dispatch() {
 						// fmt.Println("internal event", len(s.subscribers))
 						// TODO @droman: trigger close but wait for real closing
 						for _, v := range s.subscribers {
-							fmt.Println("close sub channel")
+							// fmt.Println("close sub channel")
 							close(v.Channel)
 						}
 						s.cancel()
-						fmt.Println("closed sub")
+						// fmt.Println("closed sub")
 						break
 					default:
 						// fmt.Println("distribute")
@@ -297,6 +241,7 @@ func (s *Mediator) distribute(event Event[interface{}]) {
 
 	for _, sub := range s.subscribers {
 
+		// fmt.Printf("-")
 		if _, ok := sub.InterestedIn[kind.Info]; !ok {
 			// fmt.Println("subscriber wasn't interested", event.Info)
 			continue
@@ -331,7 +276,7 @@ func (s *Mediator) Publish(e EventAnonymous) error {
 	if event, err = s.getEventFromAnonymous(e); err != nil {
 		return err
 	}
-	fmt.Println("publish", event.Info)
+	// fmt.Println("publish", event.Info)
 	if err := s.queue.Enqueue(event); err != nil {
 		fmt.Println("Error enqueueing event:", err)
 		return err
@@ -407,6 +352,62 @@ func (s *Mediator) Trigger(e EventKind) error {
 	return nil
 }
 
+type SubscriberID string
+
+type Subscriber struct {
+	ID           SubscriberID
+	InterestedIn map[EventKindName]EventKind
+	Channel      chan Event[interface{}]
+	mu           sync.Mutex
+}
+
+type OptionSubscriber func(s *Subscriber) error
+
+func OptionSubscriberID(id string) OptionSubscriber {
+	return func(s *Subscriber) error {
+		s.ID = SubscriberID(id)
+		return nil
+	}
+}
+
+func OptionSubscriberInterestedIn(es ...EventKind) OptionSubscriber {
+	return func(s *Subscriber) error {
+		for i := 0; i < len(es); i++ {
+			s.InterestedIn[es[i].Info] = es[i]
+		}
+		return nil
+	}
+}
+
+func NewSubscriber(opts ...OptionSubscriber) (*Subscriber, error) {
+	sub := Subscriber{
+		InterestedIn: make(map[EventKindName]EventKind),
+		Channel:      make(chan Event[interface{}]),
+	}
+	for i := 0; i < len(opts); i++ {
+		if err := opts[i](&sub); err != nil {
+			return nil, err
+		}
+	}
+	if sub.ID == "" {
+		var id string
+		var err error
+		if id, err = getID(); err != nil {
+			return nil, err
+		}
+		sub.ID = SubscriberID(id)
+	}
+	return &sub, nil
+}
+
+// `Register` dynamically a new event to listen to
+func (s *Subscriber) Register(kind EventKind) (EventID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.InterestedIn[kind.Info] = kind
+	return kind.ID, nil
+}
+
 func main() {
 
 	var mediator *Mediator
@@ -427,39 +428,6 @@ func main() {
 		context.Background(),
 		OptionMediatorSubscriber(subscriber),
 		OptionMediatorSize(20),
-	// OptionMediatorConsumer(func(v Event[interface{}]) {
-	// 	// fmt.Println("consumer called")
-	// 	// fmt.Println("event received:", v)
-	// 	switch c := v.Data.(type) {
-	// 	case Something:
-	// 		fmt.Println("value", c.hello)
-	// 		// if c.hello == "world" {
-	// 		// 	fmt.Printf("Current time: %v\n", time.Now())
-	// 		// 	fmt.Printf("Event creation time: %v\n", time.Time(v.CreatedAt))
-	// 		// 	elapsed := time.Since(time.Time(v.CreatedAt))
-	// 		// 	fmt.Printf("time since event creation: %s\n", elapsed)
-	// 		// }
-	// 		// if c.hello == "die" {
-	// 		// 	fmt.Printf("Current time: %v\n", time.Now())
-	// 		// 	fmt.Printf("Event creation time: %v\n", time.Time(v.CreatedAt))
-	// 		// 	elapsed := time.Since(time.Time(v.CreatedAt))
-	// 		// 	fmt.Printf("time since event creation: %s\n", elapsed)
-	// 		// }
-	// 		// if c.hello == "two" {
-	// 		// 	fmt.Printf("Current time: %v\n", time.Now())
-	// 		// 	fmt.Printf("Event creation time: %v\n", time.Time(v.CreatedAt))
-	// 		// 	elapsed := time.Since(time.Time(v.CreatedAt))
-	// 		// 	fmt.Printf("time since event creation: %s\n", elapsed)
-	// 		// }
-	// 		// if c.hello == "three" {
-	// 		// 	fmt.Printf("Current time: %v\n", time.Now())
-	// 		// 	fmt.Printf("Event creation time: %v\n", time.Time(v.CreatedAt))
-	// 		// 	elapsed := time.Since(time.Time(v.CreatedAt))
-	// 		// 	fmt.Printf("time since event creation: %s\n", elapsed)
-	// 		// }
-	// 	}
-	// }
-	// ),
 	); err != nil {
 		panic(err)
 	}
@@ -483,6 +451,10 @@ func main() {
 
 	for event := range subscriber.Channel {
 		fmt.Println("Received event:", event)
+		switch e := event.Data.(type) {
+		case Something:
+			fmt.Println(e.hello)
+		}
 	}
 
 	// fmt.Println("done")
@@ -517,9 +489,9 @@ func NewCircularBuffer(capacity int) *CircularBuffer {
 
 func (cb *CircularBuffer) Enqueue(event Event[EventKind]) error {
 	if cb.IsFull() {
-		fmt.Println("is full enqueue", cb.IsFull())
+		// fmt.Println("is full enqueue", cb.IsFull())
 		if cb.resize {
-			fmt.Println("enqueue resize!", cb.size, "->", cb.capacity*2)
+			// fmt.Println("enqueue resize!", cb.size, "->", cb.capacity*2)
 			cb.Resize(cb.capacity * 2)
 		} else {
 			return fmt.Errorf("buffer is full")
@@ -542,7 +514,7 @@ func (cb *CircularBuffer) Dequeue() (Event[EventKind], error) {
 }
 
 func (cb *CircularBuffer) IsFull() bool {
-	fmt.Println("is full", cb.size == cb.capacity, cb.size, cb.capacity)
+	// fmt.Println("is full", cb.size == cb.capacity, cb.size, cb.capacity)
 	return cb.size == cb.capacity
 }
 
@@ -551,7 +523,7 @@ func (cb *CircularBuffer) IsEmpty() bool {
 }
 
 func (cb *CircularBuffer) Resize(newCapacity int) {
-	fmt.Println("resize!", cb.capacity, "->", newCapacity)
+	// fmt.Println("resize!", cb.capacity, "->", newCapacity)
 	newBuffer := make([]Event[EventKind], newCapacity)
 	for i := 0; i < cb.size; i++ {
 		newBuffer[i] = cb.events[(cb.head+i)%cb.capacity]
