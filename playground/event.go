@@ -1,4 +1,4 @@
-package main
+package events
 
 import (
 	"context"
@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/k0kubun/pp/v3"
 )
 
 // TODO @droman: i could have phases in which the event is processed and vetted, you could have Publish (queue -> post-process -> sub | internal), Trigger (queue -> post-process -> sub | internal), ImmediatePublish (queue -> sub), ImmediateTrigger (queue -> sub)
@@ -16,7 +19,9 @@ type Mediator struct {
 	mu          sync.Mutex
 	ctx         context.Context
 	cancel      context.CancelFunc
-	queue       *CircularBuffer // we should have multiple circular buffers
+	scheduled   *CircularBuffer[Event[EventKind]]     // events that were queued by user
+	transformed *CircularBuffer[Event[interface{}]]   // events that were tranformed by mediator
+	queued      *CircularBuffer[[]Event[interface{}]] // events that are ready to be sent
 	subscribers []*Subscriber
 	getID       func() (string, error)
 }
@@ -41,21 +46,18 @@ type EventKind struct {
 
 var InfoNone EventKindName = "None"
 
+var KindNone EventKind = EventKind{
+	Kind: reflect.TypeOf(struct{}{}).Kind(),
+	Info: InfoNone,
+	Data: nil,
+}
+
 var EventNone Event[EventKind] = Event[EventKind]{
 	ID:   "",
+	Kind: KindNone,
 	Info: InfoNone,
 	Data: nil,
 	// what about kind?
-}
-
-type EventAnonymous interface{}
-
-func getKind(e EventAnonymous) EventKind {
-	kind := EventKind{
-		Kind: reflect.TypeOf(e).Kind(),
-		Info: EventKindName(reflect.ValueOf(e).Type().Name()),
-	}
-	return kind
 }
 
 type eclose struct{}
@@ -81,9 +83,23 @@ func OptionMediatorGetID(fn func() (string, error)) OptionMediator {
 	}
 }
 
-func OptionMediatorSize(buffer int) OptionMediator {
+func OptionMediatorQueuedSize(buffer int) OptionMediator {
 	return func(s *Mediator) error {
-		s.queue.Resize(buffer)
+		s.queued.Resize(buffer)
+		return nil
+	}
+}
+
+func OptionMediatorTransformedSize(buffer int) OptionMediator {
+	return func(s *Mediator) error {
+		s.transformed.Resize(buffer)
+		return nil
+	}
+}
+
+func OptionMediatorInboxSize(buffer int) OptionMediator {
+	return func(s *Mediator) error {
+		s.scheduled.Resize(buffer)
 		return nil
 	}
 }
@@ -114,22 +130,9 @@ func OptionMediatorSubscribers(subs ...OptionMediatorSub) OptionMediator {
 
 func OptionMediatorSubscriber(subs *Subscriber) OptionMediator {
 	return func(s *Mediator) error {
-
 		s.subscribers = append(s.subscribers, subs)
 		return nil
 	}
-}
-
-// `Kind` is helping the mediator to know what is the mapping of your event
-func Kind[T any]() EventKind {
-	proxy := *new(T)
-	kind := EventKind{
-		Kind:   reflect.TypeOf(proxy).Kind(),
-		Info:   EventKindName(reflect.ValueOf(proxy).Type().Name()),
-		IsNone: true,
-		Data:   proxy,
-	}
-	return kind
 }
 
 // `getID` its an internal function that will to have IDs locally but I highly encourage you to come with your own IDs
@@ -152,7 +155,9 @@ func NewMediator(ctx context.Context, opts ...OptionMediator) (*Mediator, error)
 		ctx:         ctx,
 		cancel:      cancel,
 		subscribers: []*Subscriber{},
-		queue:       NewCircularBuffer(100),
+		scheduled:   NewCircularBuffer[Event[EventKind]](100),
+		transformed: NewCircularBuffer[Event[interface{}]](100),
+		queued:      NewCircularBuffer[[]Event[interface{}]](100),
 		getID:       getID,
 	}
 	for i := 0; i < len(opts); i++ {
@@ -164,7 +169,9 @@ func NewMediator(ctx context.Context, opts ...OptionMediator) (*Mediator, error)
 }
 
 func (em *Mediator) Start() {
-	go em.dispatch()
+	go em.runQueued()
+	go em.runScheduled()
+	go em.runTransformed()
 }
 
 func (s *Mediator) AddSubscriber(sub *Subscriber) {
@@ -185,7 +192,74 @@ func (s *Mediator) tranformKind(event Event[EventKind]) Event[interface{}] {
 	return e
 }
 
-func (s *Mediator) dispatch() {
+func (s *Mediator) runScheduled() {
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			// fmt.Println("mediator context done")
+			return
+		default:
+			if !s.scheduled.IsEmpty() {
+				var err error
+				var events []Event[EventKind]
+				var total int = 10
+				if events, total, err = s.scheduled.DequeueN(total); err != nil {
+					fmt.Println("Error dequeueing event:", err)
+					continue
+				}
+				// fmt.Println("scheduled dequeue ", total)
+				for i := 0; i < len(events); i++ {
+					e := s.tranformKind(events[i])
+					if err = s.transformed.Enqueue(e); err != nil {
+						fmt.Println("Error enqueuing event:", err)
+						continue
+					}
+				}
+			}
+
+			// if s.scheduled.IsFractionFull(0.75) {
+			// 	s.scheduled.Downsize(ReduceHalf, 0)
+			// }
+
+		}
+	}
+}
+
+func (s *Mediator) runTransformed() {
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			// fmt.Println("mediator context done")
+			return
+		default:
+			if !s.transformed.IsEmpty() {
+				var err error
+				var events []Event[interface{}]
+				var total int = 1000
+				if events, total, err = s.transformed.DequeueN(total); err != nil {
+					fmt.Println("Error dequeueing event:", err)
+					continue
+				}
+				// fmt.Println("scheduled dequeue ", total)
+				// for i := 0; i < len(events); i++ {
+				if err = s.queued.Enqueue(events); err != nil {
+					fmt.Println("Error enqueuing event:", err)
+					continue
+				}
+				// }
+			}
+
+			// if s.scheduled.IsFractionFull(0.75) {
+			// 	s.scheduled.Downsize(ReduceHalf, 0)
+			// }
+
+		}
+	}
+}
+
+func (s *Mediator) runQueued() {
 	// fmt.Println("mediator started")
 	for {
 		select {
@@ -195,40 +269,127 @@ func (s *Mediator) dispatch() {
 		default:
 			// TODO @droman: we could have multiple queues on different goroutine that all know the different subscribers, it's just they all dispatch all events constantly to increase the i/o
 			// TODO @droman: we need to "interrupt" or give room to other goroutines
-			if !s.queue.IsEmpty() {
-				// fmt.Println("mediator queue not empty")
-				event, err := s.queue.Dequeue()
-				if err != nil {
+			if !s.queued.IsEmpty() {
+				var err error
+				var chunkEvents [][]Event[interface{}]
+				var total int = 1000
+				if chunkEvents, total, err = s.queued.DequeueN(total); err != nil {
 					fmt.Println("Error dequeueing event:", err)
 					continue
 				}
-				// fmt.Println("mediator dequeued")
-				e := s.tranformKind(event)
-				// now let see what are we dealing with
-				switch k := e.Kind.(type) {
-				case EventKind:
-					switch internal := k.Data.(type) {
-					case EventSize:
-						s.queue.Resize(internal.Size)
-						break
-					case EventClose:
-						// fmt.Println("internal event", len(s.subscribers))
-						// TODO @droman: trigger close but wait for real closing
-						for _, v := range s.subscribers {
-							// fmt.Println("close sub channel")
-							close(v.Channel)
+				askedClose := atomic.Bool{}
+				// fmt.Println("deuqueing queue", total)
+				// fmt.Println("queued dequeue ", total)
+				var wg sync.WaitGroup
+				for i := 0; i < len(chunkEvents); i++ {
+					wg.Add(1)
+					go func(events []Event[interface{}]) {
+						pp.Println(events)
+						defer wg.Done()
+						for idx := 0; idx < len(events); idx++ {
+							switch k := events[idx].Kind.(type) {
+							case EventKind:
+								switch internal := k.Data.(type) {
+								case EventSize:
+									s.queued.Resize(internal.Size)
+									break
+								case EventClose:
+									askedClose.Store(true)
+									break
+								default:
+									// fmt.Println("distribute")
+									s.distribute(events[idx]) // TODO @droman: eventually distribute on another queue
+								}
+							default:
+								fmt.Println("event is not eventkind", k)
+								break
+							}
 						}
-						s.cancel()
-						// fmt.Println("closed sub")
-						break
-					default:
-						// fmt.Println("distribute")
-						s.distribute(e)
-					}
-				default:
-					fmt.Println("event is not eventkind", k)
-					break
+					}(chunkEvents[i])
 				}
+
+				wg.Wait()
+
+				if askedClose.Load() {
+					// fmt.Println("internal event", len(s.subscribers))
+					// TODO @droman: trigger close but wait for real closing
+					for _, v := range s.subscribers {
+						// fmt.Println("close sub channel")
+						close(v.Channel)
+					}
+					s.cancel()
+					// fmt.Println("closed sub")
+				}
+
+				// for i := 0; i < len(chunkEvents); i++ {
+				// 	for ei := 0; ei < len(chunkEvents[i]); ei++ {
+				// 		// fmt.Println(i, ei, chunkEvents[i][ei])
+				// 		// e := s.tranformKind(events[i]) // TODO @droman: could be in a queue to pre-compute before sending
+				// 		// now let see what are we dealing with
+				// 		switch k := chunkEvents[i][ei].Kind.(type) {
+				// 		case EventKind:
+				// 			switch internal := k.Data.(type) {
+				// 			case EventSize:
+				// 				s.queued.Resize(internal.Size)
+				// 				break
+				// 			case EventClose:
+				// 				// fmt.Println("internal event", len(s.subscribers))
+				// 				// TODO @droman: trigger close but wait for real closing
+				// 				for _, v := range s.subscribers {
+				// 					// fmt.Println("close sub channel")
+				// 					close(v.Channel)
+				// 				}
+				// 				s.cancel()
+				// 				// fmt.Println("closed sub")
+				// 				break
+				// 			default:
+				// 				// fmt.Println("distribute")
+				// 				s.distribute(chunkEvents[i][ei]) // TODO @droman: eventually distribute on another queue
+				// 			}
+				// 		default:
+				// 			fmt.Println("event is not eventkind", k)
+				// 			break
+				// 		}
+				// 	}
+				// }
+
+				// if s.queued.IsFractionFull(0.75) {
+				// 	s.queued.Downsize(ReduceHalf, 0)
+				// }
+
+				// fmt.Println("mediator queue not empty")
+				// event, err := s.queue.Dequeue()
+				// if err != nil {
+				// 	fmt.Println("Error dequeueing event:", err)
+				// 	continue
+				// }
+				// fmt.Println("mediator dequeued")
+				// e := s.tranformKind(event)
+				// // now let see what are we dealing with
+				// switch k := e.Kind.(type) {
+				// case EventKind:
+				// 	switch internal := k.Data.(type) {
+				// 	case EventSize:
+				// 		s.queue.Resize(internal.Size)
+				// 		break
+				// 	case EventClose:
+				// 		// fmt.Println("internal event", len(s.subscribers))
+				// 		// TODO @droman: trigger close but wait for real closing
+				// 		for _, v := range s.subscribers {
+				// 			// fmt.Println("close sub channel")
+				// 			close(v.Channel)
+				// 		}
+				// 		s.cancel()
+				// 		// fmt.Println("closed sub")
+				// 		break
+				// 	default:
+				// 		// fmt.Println("distribute")
+				// 		s.distribute(e)
+				// 	}
+				// default:
+				// 	fmt.Println("event is not eventkind", k)
+				// 	break
+				// }
 			}
 		}
 	}
@@ -241,7 +402,13 @@ func (s *Mediator) distribute(event Event[interface{}]) {
 
 	for _, sub := range s.subscribers {
 
-		// fmt.Printf("-")
+		if sub == nil {
+			fmt.Printf("subscriber is nil")
+		}
+		if sub.InterestedIn == nil {
+			fmt.Printf("InterestedIn is nil")
+		}
+
 		if _, ok := sub.InterestedIn[kind.Info]; !ok {
 			// fmt.Println("subscriber wasn't interested", event.Info)
 			continue
@@ -277,7 +444,7 @@ func (s *Mediator) Publish(e EventAnonymous) error {
 		return err
 	}
 	// fmt.Println("publish", event.Info)
-	if err := s.queue.Enqueue(event); err != nil {
+	if err := s.scheduled.Enqueue(event); err != nil {
 		fmt.Println("Error enqueueing event:", err)
 		return err
 	}
@@ -301,7 +468,13 @@ func (s *Mediator) TriggerTo(e EventKind) error {
 
 func (s *Mediator) getEventFromAnonymous(e EventAnonymous) (Event[EventKind], error) {
 	// extract kind data from anonymous event
-	kind := getKind(e)
+	var kind EventKind
+	name := getNameKind(e)
+	if hasKind(name) {
+		kind = getKind(name)
+	} else {
+		kind = newKind(e)
+	}
 	var id string
 	var err error
 	// getting id from user or default
@@ -345,7 +518,7 @@ func (s *Mediator) Trigger(e EventKind) error {
 		return err
 	}
 	// fmt.Println("trigger", e.Info)
-	if err = s.queue.Enqueue(event); err != nil {
+	if err = s.scheduled.Enqueue(event); err != nil {
 		fmt.Println("Error enqueueing event:", err)
 		return err
 	}
@@ -406,130 +579,4 @@ func (s *Subscriber) Register(kind EventKind) (EventID, error) {
 	defer s.mu.Unlock()
 	s.InterestedIn[kind.Info] = kind
 	return kind.ID, nil
-}
-
-func main() {
-
-	var mediator *Mediator
-	var err error
-
-	var subscriber *Subscriber
-
-	if subscriber, err = NewSubscriber(
-		OptionSubscriberInterestedIn(
-			Kind[Something](),
-			Kind[Else](),
-		),
-	); err != nil {
-		panic(err)
-	}
-
-	if mediator, err = NewMediator(
-		context.Background(),
-		OptionMediatorSubscriber(subscriber),
-		OptionMediatorSize(20),
-	); err != nil {
-		panic(err)
-	}
-
-	mediator.Start()
-
-	go func() {
-		// time.Sleep(time.Second * 1)
-		// TODO @droman: have a thing that allow the main goroutine to work too
-		for j := 0; j < 5; j++ {
-			if err := mediator.Publish(Something{hello: "test"}); err != nil {
-				fmt.Println("panic ", err)
-				panic(err)
-			}
-		}
-		mediator.Publish(EventSize{
-			Size: 30,
-		})
-		mediator.Trigger(Kind[EventClose]())
-	}()
-
-	for event := range subscriber.Channel {
-		fmt.Println("Received event:", event)
-		switch e := event.Data.(type) {
-		case Something:
-			fmt.Println(e.hello)
-		}
-	}
-
-	// fmt.Println("done")
-}
-
-type Something struct {
-	hello string
-}
-
-type Else struct {
-	ok string
-}
-
-type CircularBuffer struct {
-	events   []Event[EventKind]
-	head     int
-	tail     int
-	size     int
-	capacity int
-	resize   bool
-}
-
-func NewCircularBuffer(capacity int) *CircularBuffer {
-	buffer := &CircularBuffer{
-		events:   make([]Event[EventKind], capacity),
-		capacity: capacity,
-		resize:   true,
-	}
-	buffer.Resize(capacity)
-	return buffer
-}
-
-func (cb *CircularBuffer) Enqueue(event Event[EventKind]) error {
-	if cb.IsFull() {
-		// fmt.Println("is full enqueue", cb.IsFull())
-		if cb.resize {
-			// fmt.Println("enqueue resize!", cb.size, "->", cb.capacity*2)
-			cb.Resize(cb.capacity * 2)
-		} else {
-			return fmt.Errorf("buffer is full")
-		}
-	}
-	cb.events[cb.tail] = event
-	cb.tail = (cb.tail + 1) % cb.capacity
-	cb.size++
-	return nil
-}
-
-func (cb *CircularBuffer) Dequeue() (Event[EventKind], error) {
-	if cb.IsEmpty() {
-		return Event[EventKind]{}, fmt.Errorf("buffer is empty")
-	}
-	event := cb.events[cb.head]
-	cb.head = (cb.head + 1) % cb.capacity
-	cb.size--
-	return event, nil
-}
-
-func (cb *CircularBuffer) IsFull() bool {
-	// fmt.Println("is full", cb.size == cb.capacity, cb.size, cb.capacity)
-	return cb.size == cb.capacity
-}
-
-func (cb *CircularBuffer) IsEmpty() bool {
-	return cb.size == 0
-}
-
-func (cb *CircularBuffer) Resize(newCapacity int) {
-	// fmt.Println("resize!", cb.capacity, "->", newCapacity)
-	newBuffer := make([]Event[EventKind], newCapacity)
-	for i := 0; i < cb.size; i++ {
-		newBuffer[i] = cb.events[(cb.head+i)%cb.capacity]
-	}
-	cb.events = newBuffer
-	cb.head = 0
-	cb.tail = cb.size
-	cb.capacity = newCapacity
 }

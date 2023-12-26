@@ -1,0 +1,4 @@
+
+
+bench:
+	go run ./bench
