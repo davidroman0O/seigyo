@@ -28,7 +28,7 @@ func TestSimpleKind(t *testing.T) {
 		t.Errorf("should be not have the kind since it doesn't exists yet")
 	}
 
-	if kind := Kind[testKind](); kind.Info != name {
+	if kind := AsKind[testKind](); kind.ID != name {
 		t.Errorf("should be not have different EventKindName")
 	}
 

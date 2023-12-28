@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	events "github.com/davidroman0O/seigyo/playground"
 )
@@ -24,8 +25,8 @@ func simpleBenchmark() error {
 
 	if subscriber, err = events.NewSubscriber(
 		events.OptionSubscriberInterestedIn(
-			events.Kind[Something](),
-			events.Kind[Else](),
+			events.AsKind[Something](),
+			events.AsKind[Else](),
 		),
 	); err != nil {
 		return err
@@ -34,30 +35,36 @@ func simpleBenchmark() error {
 	if mediator, err = events.NewMediator(
 		context.Background(),
 		events.OptionMediatorSubscriber(subscriber),
-		events.OptionMediatorQueuedSize(5),
+		// TODO @droman: add more options
 	); err != nil {
 		return err
 	}
 
 	mediator.Start()
 
+	now := time.Now()
 	cerr := make(chan error)
 
 	go func() {
-		for j := 0; j < 4; j++ {
-			if err := mediator.Publish(Something{hello: "test"}); err != nil {
+		for j := 0; j < 10; j++ {
+			if err := mediator.
+				Publish(
+					Something{
+						hello: "test",
+					},
+				); err != nil {
 				fmt.Println("panic ", err)
 				cerr <- err
 				return
 			}
 		}
 		if err := mediator.Publish(events.EventSize{
-			Size: 7,
+			Size: 20,
 		}); err != nil {
 			cerr <- err
 			return
 		}
-		if err := mediator.Trigger(events.Kind[events.EventClose]()); err != nil {
+		if err := mediator.Trigger(events.AsKind[events.EventClose]()); err != nil {
 			cerr <- err
 			return
 		}
@@ -65,8 +72,13 @@ func simpleBenchmark() error {
 	}()
 
 	// try to empty the channel
-	for _ = range subscriber.Channel {
+	for e := range subscriber.Channel {
+		fmt.Println(e)
 	}
+
+	// for _ = range subscriber.Channel {
+
+	// }
 
 	select {
 	case e := <-cerr:
@@ -74,6 +86,8 @@ func simpleBenchmark() error {
 			return e
 		}
 	}
+
+	fmt.Println("time ", time.Since(now))
 
 	return nil
 }
