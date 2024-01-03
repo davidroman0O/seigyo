@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"time"
 
 	events "github.com/davidroman0O/seigyo/playground"
@@ -17,7 +18,7 @@ type Else struct {
 }
 
 func simpleBenchmark() error {
-
+	runtime.GOMAXPROCS(runtime.NumCPU())
 	var mediator *events.Mediator
 	var err error
 
@@ -46,7 +47,10 @@ func simpleBenchmark() error {
 	cerr := make(chan error)
 
 	go func() {
-		for j := 0; j < 10; j++ {
+		defer func() {
+			close(cerr)
+		}()
+		for j := 0; j < 1000000; j++ {
 			if err := mediator.
 				Publish(
 					Something{
@@ -58,27 +62,38 @@ func simpleBenchmark() error {
 				return
 			}
 		}
-		if err := mediator.Publish(events.EventSize{
-			Size: 20,
-		}); err != nil {
-			cerr <- err
-			return
-		}
+		// if err := mediator.Publish(events.EventSize{
+		// 	Size: 20,
+		// }); err != nil {
+		// 	cerr <- err
+		// 	return
+		// }
+		fmt.Println("trigger close")
 		if err := mediator.Trigger(events.AsKind[events.EventClose]()); err != nil {
 			cerr <- err
 			return
 		}
+		fmt.Println("triggered")
 		cerr <- nil
 	}()
 
+	counter := 0
+
+	// defer func() {
+	// 	fmt.Println("count ", counter)
+	// }()
+
 	// try to empty the channel
-	for e := range subscriber.Channel {
-		fmt.Println(e)
-	}
-
-	// for _ = range subscriber.Channel {
-
+	// for e := range subscriber.Channel {
+	// 	fmt.Println(e)
 	// }
+
+	for e := range subscriber.Channel {
+		switch e.Data.(type) {
+		case Something:
+			counter++
+		}
+	}
 
 	select {
 	case e := <-cerr:
@@ -88,6 +103,7 @@ func simpleBenchmark() error {
 	}
 
 	fmt.Println("time ", time.Since(now))
+	fmt.Println("count ", counter)
 
 	return nil
 }

@@ -13,10 +13,6 @@ import (
 // of an application.
 var KindRegistry *ThreadSafeMap[EventKindID, Kind] = NewThreadSafeMap[EventKindID, Kind]()
 
-// `EventAnonymous` represent a given event by the user, it can be known or unknown.
-// If it's `Kind` is unknown, then it will be analyzed and registred into the `RegistryKind`
-type EventAnonymous interface{}
-
 // `newKind` create a new EventKind without ID
 func newKind(e EventAnonymous) Kind {
 	kind := Kind{
@@ -33,6 +29,18 @@ func newKindWithName(e EventAnonymous, name EventKindID) Kind {
 	kind := Kind{
 		Kind:     reflect.TypeOf(e).Kind(),
 		ID:       name,
+		IsNone:   false,
+		TypeInfo: e,
+	}
+	return kind
+}
+
+// `newKindTyped`
+func newKindTyped[T any]() Kind {
+	e := *new(T)
+	kind := Kind{
+		Kind:     reflect.TypeOf(e).Kind(),
+		ID:       getNameKind(e),
 		IsNone:   false,
 		TypeInfo: e,
 	}

@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
+	"sync/atomic"
+
+	"github.com/davidroman0O/multigroup"
 )
 
 /// TODO @droman: i have 1M/s but i think that if i track with `atomic` the throughput of the registry processing
@@ -21,12 +25,6 @@ var (
 
 // TODO @droman: i could have phases in which the event is processed and vetted, you could have Publish (queue -> post-process -> sub | internal), Trigger (queue -> post-process -> sub | internal), ImmediatePublish (queue -> sub), ImmediateTrigger (queue -> sub)
 
-// /////////////////////////////////////////////////////////////////////////
-
-const defaultThroughput = 300
-
-///////////////////////////////////////////////////////////////////////////
-
 // `mediatorStatic` hold a static copies of data used for comparison
 type mediatorStatic struct {
 	EventNone Event[interface{}]
@@ -41,6 +39,7 @@ func newStatic() mediatorStatic {
 }
 
 // TODO @droman: have dynamic resize to listen in a goroutine if there is activity and have a delta to know when to downsize
+// TODO @droman: different types of queues
 type Mediator struct {
 	mu     sync.Mutex
 	ctx    context.Context
@@ -48,11 +47,15 @@ type Mediator struct {
 
 	// all broadcasted events will be managed by the `globalRegistry`
 	globalRegistry *EventRegistry
+	enqueue        *CircularBuffer[Event[interface{}]]
 
 	subscribers []*Subscriber
 	getID       func() (string, error)
 	static      mediatorStatic // contains all static data computed at init
 
+	// scheduler *BatchScheduler
+	throughput int
+	procStatus int32
 }
 
 type OptionMediator func(s *Mediator) error
@@ -124,6 +127,9 @@ func NewMediator(ctx context.Context, opts ...OptionMediator) (*Mediator, error)
 		cancel:      cancel,
 		subscribers: []*Subscriber{},
 		getID:       getID,
+		enqueue:     NewCircularBuffer[Event[interface{}]](messageBatchSize),
+		// scheduler:   NewBatchScheduler(messageBatchSize, defaultThroughput),
+		throughput: 10,
 	}
 	var err error
 	for i := 0; i < len(opts); i++ {
@@ -142,10 +148,22 @@ func NewMediator(ctx context.Context, opts ...OptionMediator) (*Mediator, error)
 }
 
 func (em *Mediator) Start() {
-	// go em.runQueued()
-	// go em.runScheduled()
-	// go em.runTransformed()
-	go em.runGlobalRegistry()
+	// go em.runGlobalRegistry()
+
+	// dequeue queue
+	// go func() {
+	// 	for {
+	// 		select {
+	// 		case <-em.ctx.Done():
+	// 			fmt.Println("mediator global registry context done")
+	// 			return
+	// 		default:
+
+	// 			em.schedule()
+	// 		}
+	// 	}
+	// }()
+	// go em.scheduler.Run()
 }
 
 func (s *Mediator) AddSubscriber(sub *Subscriber) {
@@ -166,93 +184,238 @@ func (s *Mediator) tranformKind(event Event[interface{}]) Event[interface{}] {
 }
 
 func (s *Mediator) close() {
+	atomic.StoreInt32(&s.procStatus, stopped)
 	for _, v := range s.subscribers {
+		fmt.Println("close channel subscriber", v.Channel)
 		close(v.Channel)
 	}
-	s.cancel()
+	// s.cancel()
+	// s.scheduler.Stop()
+}
+
+func (s *Mediator) dequeueGlobalRegistry() error {
+
+	var wg sync.WaitGroup
+
+	// fmt.Println("dequeue")
+	for _, kindID := range KindRegistry.Keys() {
+		wg.Add(1)
+
+		// fmt.Println("dequeue kind", kindID)
+		go func(kind EventKindID) {
+			defer wg.Done()
+
+			var ok bool
+			var err error
+			var events []Event[interface{}]
+			var buffer *CircularBuffer[Event[interface{}]]
+
+			// fmt.Println("dequeue get kind", kind)
+			if buffer, ok = s.globalRegistry.Get(kind); !ok {
+				// which is fine because we're are not interested in it
+				// fmt.Printf("failed to get buffer %v \n", kindID)
+				return
+			}
+
+			if buffer.IsEmpty() {
+				// fmt.Println("dequeue kind empty", kind)
+				return
+			}
+
+			// fmt.Println("dequeueing kind", kind)
+			if events, _, err = buffer.DequeueN(messageBatchSize); err != nil {
+				fmt.Printf("failed to dequeue %v %v: %v \n", messageBatchSize, kind, err.Error())
+				return
+			}
+
+			// we are broadcasting event to all subscibers
+			for idx := 0; idx < len(events); idx++ {
+
+				for _, sub := range s.subscribers {
+					if sub == nil {
+						fmt.Printf("subscriber is nil")
+					}
+					if sub.InterestedIn == nil {
+						fmt.Printf("InterestedIn is nil")
+					}
+					if _, ok := sub.InterestedIn[events[idx].Kind]; !ok {
+						fmt.Println("subscriber wasn't interested", events[idx].Kind)
+						continue
+					}
+					// fmt.Println("published to subscribeer", event)
+					sub.Channel <- events[idx]
+				}
+			}
+		}(kindID)
+	}
+
+	wg.Wait()
+
+	return nil
+}
+
+func (em *Mediator) runGroups() {
+	eventKindSelector := func(p Event[interface{}]) (string, string) { return "Kind", string(p.Kind) }
+	var ok bool
+	var err error
+	var events []Event[interface{}]
+	var buffer *CircularBuffer[Event[interface{}]]
+	// fmt.Println("dequeue groups")
+	if em.enqueue.IsEmpty() {
+		return
+	}
+	if events, _, err = em.enqueue.DequeueN(messageBatchSize); err != nil {
+		fmt.Printf("failed to dequeue %v %v: %v \n", messageBatchSize, err.Error())
+		return
+	}
+
+	externalEvents := []Event[interface{}]{}
+	groupedEvents := multigroup.By(events, eventKindSelector)
+	// fmt.Println("group of events ", len(groupedEvents))
+	for i := 0; i < len(groupedEvents); i++ {
+		kind := EventKindID(groupedEvents[i].Keys[0].Value)
+		if !em.globalRegistry.Has(EventKindID(kind)) {
+			em.globalRegistry.Set(kind, NewCircularBuffer[Event[interface{}]](messageBatchSize))
+		}
+		if buffer, ok = em.globalRegistry.Get(kind); !ok {
+			// which is fine because we're are not interested in it
+			fmt.Printf("failed to get buffer %v \n", kind)
+			return
+		}
+		// fmt.Println("group of events count ", len(groupedEvents[i].Items))
+		for idx := 0; idx < len(groupedEvents[i].Items); idx++ {
+
+			switch groupedEvents[i].Items[idx].Data.(type) {
+
+			case EventSize:
+				// TODO: make a way to capture internal events from the get go into an internal registries
+				fmt.Println("event resize")
+				break
+
+			case EventClose:
+				// TODO: make a way to capture internal events from the get go into an internal registries
+				// TODO: DO NOT MANAGE INTERNAL EVENT THAT WAY, IT IS SUPER DUMB, i'm just testing stuff
+				fmt.Println("event close")
+				em.close()
+				continue
+
+			default:
+				externalEvents = append(externalEvents, groupedEvents[i].Items[idx])
+				continue
+			}
+		}
+		buffer.EnqueueN(externalEvents)
+	}
+}
+
+func (in *Mediator) schedule() {
+	if atomic.CompareAndSwapInt32(&in.procStatus, idle, running) {
+		go in.process()
+	}
+}
+
+func (in *Mediator) process() {
+	in.runGlobalRegistry()
+	atomic.StoreInt32(&in.procStatus, idle)
 }
 
 // Every broadcasted events will be managed by the `globalRegistry`
 func (s *Mediator) runGlobalRegistry() {
-	for {
-		select {
-		case <-s.ctx.Done():
-			fmt.Println("mediator global registry context done")
+	i, t := 0, s.throughput
+	// fmt.Println("run global registry")
+	for atomic.LoadInt32(&s.procStatus) != stopped {
+		if i > t {
+			i = 0
+			runtime.Gosched()
+		}
+		i++
+		// fmt.Println(i, t)
+		s.runGroups()
+		if err := s.dequeueGlobalRegistry(); err != nil {
+			fmt.Println(err)
 			return
-		default:
-			// TODO @droman create workers that will manage different kinds for this global registry
-			var ok bool
-			var err error
-			var events []Event[interface{}]
-
-			var buffer *CircularBuffer[Event[interface{}]]
-			for _, kindID := range KindRegistry.Keys() {
-				if buffer, ok = s.globalRegistry.Get(kindID); !ok {
-					// which is fine because we're are not interested in it
-					// fmt.Printf("failed to get buffer %v \n", kindID)
-					continue
-				}
-				if buffer.IsEmpty() {
-					continue
-				}
-				if events, _, err = buffer.DequeueN(defaultThroughput); err != nil {
-					fmt.Printf("failed to dequeue %v %v: %v \n", defaultThroughput, kindID, err.Error())
-					continue
-				}
-				// we are broadcasting event to all subscibers
-				for idx := 0; idx < len(events); idx++ {
-
-					switch events[idx].Data.(type) {
-
-					case EventSize:
-						// TODO: make a way to capture internal events from the get go into an internal registries
-						fmt.Println("event resize")
-						break
-					case EventClose:
-						// TODO: make a way to capture internal events from the get go into an internal registries
-						// TODO: DO NOT MANAGE INTERNAL EVENT THAT WAY, IT IS SUPER DUMB, i'm just testing stuff
-						fmt.Println("event close")
-						s.close()
-						return
-					}
-
-					for _, sub := range s.subscribers {
-						if sub == nil {
-							fmt.Printf("subscriber is nil")
-						}
-						if sub.InterestedIn == nil {
-							fmt.Printf("InterestedIn is nil")
-						}
-						if _, ok := sub.InterestedIn[events[idx].Kind]; !ok {
-							fmt.Println("subscriber wasn't interested", events[idx].Kind)
-							continue
-						}
-						// fmt.Println("published to subscribeer", event)
-						sub.Channel <- events[idx]
-					}
-					// s.distribute(events[idx])
-					// switch k := events[idx].Data.(type) {
-					// case Kind:
-					// 	fmt.Println(k)
-					// 	// switch internal := k.(type) {
-					// 	// // case EventSize:
-					// 	// // 	s.queued.Resize(internal.Size)
-					// 	// // 	break
-					// 	// // case EventClose:
-					// 	// // 	askedClose.Store(true)
-					// 	// // 	break
-					// 	// default:
-					// 	// 	// fmt.Println("distribute")
-					// 	// 	s.distribute(events[idx]) // TODO @droman: eventually distribute on another que
-					// 	// }
-					// default:
-					// 	fmt.Println("event is not eventkind", k)
-					// 	break
-					// }
-				}
-			}
 		}
 	}
+
+	// for {
+	// 	select {
+	// 	case <-s.ctx.Done():
+	// 		fmt.Println("mediator global registry context done")
+	// 		return
+	// 	default:
+	// 		// TODO @droman create workers that will manage different kinds for this global registry
+	// 		var ok bool
+	// 		var err error
+	// 		var events []Event[interface{}]
+
+	// 		var buffer *CircularBuffer[Event[interface{}]]
+	// 		for _, kindID := range KindRegistry.Keys() {
+	// 			if buffer, ok = s.globalRegistry.Get(kindID); !ok {
+	// 				// which is fine because we're are not interested in it
+	// 				// fmt.Printf("failed to get buffer %v \n", kindID)
+	// 				continue
+	// 			}
+	// 			if buffer.IsEmpty() {
+	// 				continue
+	// 			}
+	// 			if events, _, err = buffer.DequeueN(defaultThroughput); err != nil {
+	// 				fmt.Printf("failed to dequeue %v %v: %v \n", defaultThroughput, kindID, err.Error())
+	// 				continue
+	// 			}
+	// 			// we are broadcasting event to all subscibers
+	// 			for idx := 0; idx < len(events); idx++ {
+
+	// 				switch events[idx].Data.(type) {
+
+	// 				case EventSize:
+	// 					// TODO: make a way to capture internal events from the get go into an internal registries
+	// 					fmt.Println("event resize")
+	// 					break
+	// 				case EventClose:
+	// 					// TODO: make a way to capture internal events from the get go into an internal registries
+	// 					// TODO: DO NOT MANAGE INTERNAL EVENT THAT WAY, IT IS SUPER DUMB, i'm just testing stuff
+	// 					fmt.Println("event close")
+	// 					s.close()
+	// 					return
+	// 				}
+
+	// 				for _, sub := range s.subscribers {
+	// 					if sub == nil {
+	// 						fmt.Printf("subscriber is nil")
+	// 					}
+	// 					if sub.InterestedIn == nil {
+	// 						fmt.Printf("InterestedIn is nil")
+	// 					}
+	// 					if _, ok := sub.InterestedIn[events[idx].Kind]; !ok {
+	// 						fmt.Println("subscriber wasn't interested", events[idx].Kind)
+	// 						continue
+	// 					}
+	// 					// fmt.Println("published to subscribeer", event)
+	// 					sub.Channel <- events[idx]
+	// 				}
+	// 				// s.distribute(events[idx])
+	// 				// switch k := events[idx].Data.(type) {
+	// 				// case Kind:
+	// 				// 	fmt.Println(k)
+	// 				// 	// switch internal := k.(type) {
+	// 				// 	// // case EventSize:
+	// 				// 	// // 	s.queued.Resize(internal.Size)
+	// 				// 	// // 	break
+	// 				// 	// // case EventClose:
+	// 				// 	// // 	askedClose.Store(true)
+	// 				// 	// // 	break
+	// 				// 	// default:
+	// 				// 	// 	// fmt.Println("distribute")
+	// 				// 	// 	s.distribute(events[idx]) // TODO @droman: eventually distribute on another que
+	// 				// 	// }
+	// 				// default:
+	// 				// 	fmt.Println("event is not eventkind", k)
+	// 				// 	break
+	// 				// }
+	// 			}
+	// 		}
+	// 	}
+	// }
 }
 
 // func (s *Mediator) runScheduled() {
@@ -501,6 +664,9 @@ func (s *Mediator) Publish(e EventAnonymous) error {
 	if event, err = s.getEventFromAnonymous(e); err != nil {
 		return err
 	}
+
+	defer s.schedule()
+	// s.scheduler.Schedule(s.dequeueGlobalRegistry)
 	// it is the struct directly
 	// switch e.(type) {
 	// case EventSize:
@@ -512,8 +678,9 @@ func (s *Mediator) Publish(e EventAnonymous) error {
 	// 	fmt.Println("event close")
 	// 	break
 	// }
+	return s.enqueue.Enqueue(*event)
 	// fmt.Println("publish", event.Info)
-	return s.globalRegistry.Enqueue(event)
+	// return s.globalRegistry.Enqueue(event)
 }
 
 // `Trigger`
@@ -525,6 +692,10 @@ func (s *Mediator) Trigger(e Kind) error {
 	if event, err = s.getEventFromKind(e); err != nil {
 		return err
 	}
+
+	defer s.schedule()
+	// defer s.schedule()
+	// s.scheduler.Schedule(s.dequeueGlobalRegistry)
 	// we can have the type through the `Kind`
 	// switch e.TypeInfo.(type) {
 	// case EventSize:
@@ -536,7 +707,8 @@ func (s *Mediator) Trigger(e Kind) error {
 	// 	fmt.Println("event close")
 	// 	break
 	// }
-	return s.globalRegistry.Enqueue(event)
+	// return s.globalRegistry.Enqueue(event)
+	return s.enqueue.Enqueue(*event)
 }
 
 // `Publish` will process an event to reach an intereted subscribers

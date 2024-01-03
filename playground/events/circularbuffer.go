@@ -1,8 +1,12 @@
 package events
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 type CircularBuffer[T any] struct {
+	mu          sync.Mutex
 	arr         []T
 	head        int
 	tail        int
@@ -32,11 +36,20 @@ func NewCircularBuffer[T any](capacity int) *CircularBuffer[T] {
 }
 
 func (cb *CircularBuffer[T]) Enqueue(event T) error {
-	if cb.IsFull() {
-		// fmt.Println("is full enqueue", cb.IsFull())
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	if cb.size == cb.capacity {
+		// fmt.Println("is full enqueue", cb.size == cb.capacity)
 		if cb.resize {
 			fmt.Println("enqueue resize!", cb.size, "->", cb.capacity*2)
-			cb.Resize(cb.capacity * 2)
+			newBuffer := make([]T, cb.capacity*2)
+			for i := 0; i < cb.size; i++ {
+				newBuffer[i] = cb.arr[(cb.head+i)%cb.capacity]
+			}
+			cb.arr = newBuffer
+			cb.head = 0
+			cb.tail = cb.size
+			cb.capacity = cb.capacity * 2
 		} else {
 			return fmt.Errorf("buffer is full")
 		}
@@ -48,7 +61,9 @@ func (cb *CircularBuffer[T]) Enqueue(event T) error {
 }
 
 func (cb *CircularBuffer[T]) Dequeue() (T, error) {
-	if cb.IsEmpty() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	if cb.size == 0 {
 		return cb.empty, fmt.Errorf("buffer is empty")
 	}
 	event := cb.arr[cb.head]
@@ -58,6 +73,8 @@ func (cb *CircularBuffer[T]) Dequeue() (T, error) {
 }
 
 func (cb *CircularBuffer[T]) EnqueueN(items []T) int {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 	numEnqueued := 0
 	remainingCapacity := cb.capacity - cb.size
 
@@ -82,35 +99,9 @@ func (cb *CircularBuffer[T]) EnqueueN(items []T) int {
 	return numEnqueued
 }
 
-// // DequeueN dequeues up to n items from the buffer.
-// // It returns a slice of dequeued items and the actual number of items dequeued.
-// func (cb *CircularBuffer[T]) DequeueN(n int) ([]T, int, error) {
-// 	if cb.IsEmpty() {
-// 		return nil, 0, fmt.Errorf("buffer is empty")
-// 	}
-
-// 	numToDequeue := min(n, cb.size)
-// 	items := make([]T, numToDequeue)
-
-// 	firstPart := min(numToDequeue, cb.capacity-cb.head)
-
-// 	// Copy the first part
-// 	copy(items, cb.events[cb.head:cb.head+firstPart])
-
-// 	// If wrapped around and there's more to dequeue
-// 	if numToDequeue > firstPart {
-// 		secondPart := numToDequeue - firstPart
-// 		copy(items[firstPart:], cb.events[:secondPart])
-// 	}
-
-// 	// Update head and size
-// 	cb.head = (cb.head + numToDequeue) % cb.capacity
-// 	cb.size -= numToDequeue
-
-//		return items, numToDequeue, nil
-//	}
-
 func (cb *CircularBuffer[T]) Downsize(strategy int, customSize int) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 	var newCapacity int
 
 	switch strategy {
@@ -152,12 +143,18 @@ func (cb *CircularBuffer[T]) Downsize(strategy int, customSize int) {
 }
 
 func (cb *CircularBuffer[T]) DequeueN(n int) ([]T, int, error) {
-	if cb.IsEmpty() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	if cb.size == 0 {
 		return nil, 0, fmt.Errorf("buffer is empty")
 	}
 
 	// Dequeue only as many items as are available, up to n
 	numItems := min(n, cb.size)
+	if numItems <= 0 {
+		fmt.Println(n, cb.size, numItems)
+		return nil, 0, fmt.Errorf("wait for new items")
+	}
 	items := make([]T, numItems)
 
 	for i := 0; i < numItems; i++ {
@@ -170,23 +167,33 @@ func (cb *CircularBuffer[T]) DequeueN(n int) ([]T, int, error) {
 }
 
 func (cb *CircularBuffer[T]) IsFull() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 	// fmt.Println("is full", cb.size == cb.capacity, cb.size, cb.capacity)
 	return cb.size == cb.capacity
 }
 
 func (cb *CircularBuffer[T]) IsEmpty() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 	return cb.size == 0
 }
 
 func (cb *CircularBuffer[T]) IsHalfFull() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 	return cb.size <= cb.capacity/2
 }
 
 func (cb *CircularBuffer[T]) IsQuarterFull() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 	return cb.size <= cb.capacity/4
 }
 
 func (cb *CircularBuffer[T]) IsFractionFull(fraction float64) bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 	if fraction <= 0 || fraction > 1 {
 		fmt.Println("Invalid fraction value. Must be > 0 and <= 1")
 		return false
@@ -196,6 +203,8 @@ func (cb *CircularBuffer[T]) IsFractionFull(fraction float64) bool {
 }
 
 func (cb *CircularBuffer[T]) Resize(newCapacity int) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 	// fmt.Println("resize!", cb.capacity, "->", newCapacity)
 	newBuffer := make([]T, newCapacity)
 	for i := 0; i < cb.size; i++ {

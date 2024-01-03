@@ -29,3 +29,7 @@ type EventCreated time.Time
 
 // `EventKindID` represent the signature of a kind
 type EventKindID string
+
+// `EventAnonymous` represent a given event by the user, it can be known or unknown.
+// If it's `Kind` is unknown, then it will be analyzed and registred into the `RegistryKind`
+type EventAnonymous interface{}
