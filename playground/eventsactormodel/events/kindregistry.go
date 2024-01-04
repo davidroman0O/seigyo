@@ -11,7 +11,7 @@ import (
 // `registryKind` instance of a `KindRegistry`. There can be only one `KindRegistry` per `go` runtime.
 // Those registry are meant to be used as the underlying grid that manage the communicate across different modules
 // of an application.
-var KindRegistry *ThreadSafeMap[EventKindID, Kind] = NewThreadSafeMap[EventKindID, Kind]()
+var KindRegistry *ThreadSafeMap[KindID, Kind] = NewThreadSafeMap[KindID, Kind]()
 
 // `newKind` create a new EventKind without ID
 func newKind(e EventAnonymous) Kind {
@@ -25,7 +25,7 @@ func newKind(e EventAnonymous) Kind {
 }
 
 // `newKindWithName` create a new EventKind without ID when you know the name
-func newKindWithName(e EventAnonymous, name EventKindID) Kind {
+func newKindWithName(e EventAnonymous, name KindID) Kind {
 	kind := Kind{
 		Kind:     reflect.TypeOf(e).Kind(),
 		ID:       name,
@@ -33,6 +33,10 @@ func newKindWithName(e EventAnonymous, name EventKindID) Kind {
 		TypeInfo: e,
 	}
 	return kind
+}
+
+func getKindID(fnType reflect.Type) KindID {
+	return KindID(fmt.Sprintf("%v.%v", fnType.PkgPath(), fnType.Name()))
 }
 
 // `newKindTyped`
@@ -48,11 +52,11 @@ func newKindTyped[T any]() Kind {
 }
 
 // `hasKind` verify if the registry knowns a kind name
-func hasKind(name EventKindID) bool {
+func hasKind(name KindID) bool {
 	return KindRegistry.Has(name)
 }
 
-func getKind(name EventKindID) Kind {
+func getKind(name KindID) Kind {
 	k, ok := KindRegistry.Get(name)
 	if ok {
 		return k
@@ -61,8 +65,8 @@ func getKind(name EventKindID) Kind {
 }
 
 // `getNameKind` will generate a unique string based on the pkg path and the name of the type to know the origin of a type
-func getNameKind(e EventAnonymous) EventKindID {
-	return EventKindID(fmt.Sprintf("%v.%v", reflect.ValueOf(e).Type().PkgPath(), reflect.ValueOf(e).Type().Name()))
+func getNameKind(e EventAnonymous) KindID {
+	return KindID(fmt.Sprintf("%v.%v", reflect.ValueOf(e).Type().PkgPath(), reflect.ValueOf(e).Type().Name()))
 }
 
 func storeKind(kind Kind) {

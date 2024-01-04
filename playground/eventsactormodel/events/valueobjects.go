@@ -7,7 +7,7 @@ import (
 var (
 	NoID EventID = "no-id" // represent the id of a none event
 	// NoneID   KindID        = "none-id" // represent the id of a none kind
-	InfoNone EventKindID = "none" // represent the signature of a none kind
+	InfoNone KindID = "none" // represent the signature of a none kind
 )
 
 // `EventClose` represent an event to quit the event system
@@ -27,8 +27,8 @@ type EventID string
 // `EventCreated` represent the creation date of an event
 type EventCreated time.Time
 
-// `EventKindID` represent the signature of a kind
-type EventKindID string
+// `KindID` represent the signature of a kind
+type KindID string
 
 // `EventAnonymous` represent a given event by the user, it can be known or unknown.
 // If it's `Kind` is unknown, then it will be analyzed and registred into the `RegistryKind`

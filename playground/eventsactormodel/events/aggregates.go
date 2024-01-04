@@ -18,7 +18,7 @@ var EventNone Event[interface{}] = Event[interface{}]{
 // `Kind` represent the signature of a given type by the user to track
 // in which registry it belong to.
 type Kind struct {
-	ID       EventKindID
+	ID       KindID
 	Kind     reflect.Kind
 	IsNone   bool
 	TypeInfo interface{}
@@ -30,6 +30,6 @@ type Kind struct {
 type Event[T any] struct {
 	ID        EventID
 	CreatedAt EventCreated
-	Kind      EventKindID
+	Kind      KindID
 	Data      T
 }
