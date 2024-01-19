@@ -1,0 +1,7 @@
+[ ] - Event when add new process
+[ ] - Event when remove process
+[ ] - Event deinit
+[ ] - Event init
+[ ] - Event run
+[ ] - Event event sent
+[ ] - Function for metric gathering for prometheus (without depending on it)

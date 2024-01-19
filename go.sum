@@ -1,2 +1,4 @@
 github.com/davidroman0O/multigroup v0.0.0-20231109025713-c5489f2f4a49 h1:fowsR6RWNdgPslFs2sNKQKYMmX4CS+TCxfPfKaVyiss=
 github.com/davidroman0O/multigroup v0.0.0-20231109025713-c5489f2f4a49/go.mod h1:5R5iWAkvHPCOnCdofHWJq5qUfvw3GigH3jSbZZpYj3k=
+github.com/enriquebris/goconcurrentqueue v0.7.0 h1:JYrDa45N3xo3Sr9mjvlRaWiBHvBEJIhAdLXO3VGVghA=
+github.com/enriquebris/goconcurrentqueue v0.7.0/go.mod h1:OZ+KC2BcRYzjg0vgoUs1GFqdAjkD9mz2Ots7Jbm1yS4=

@@ -308,6 +308,7 @@ var system System
 
 func Start(fn ...any) chan error {
 	cerr := make(chan error)
+
 	for _, v := range fn {
 		switch fn := v.(type) {
 		case Application:
@@ -317,6 +318,7 @@ func Start(fn ...any) chan error {
 			// TODO: I need to assemble all applications and all actors into one dag
 		}
 	}
+
 	ctx, cancel = context.WithCancel(context.Background())
 
 	// go func() {
@@ -326,7 +328,6 @@ func Start(fn ...any) chan error {
 	// 			fmt.Println("context done")
 	// 			return
 	// 		default:
-
 	// 		}
 	// 	}
 	// }()
