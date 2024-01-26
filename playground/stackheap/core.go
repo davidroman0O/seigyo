@@ -92,6 +92,10 @@ func WithDefaultThroughput(throughput int) seigyoConfiguration {
 	}
 }
 
+func IsReady() bool {
+	return len(schedulers) > 0
+}
+
 // it's the main `wait` function
 func Run(opts ...seigyoConfiguration) error {
 	for _, opt := range opts {
@@ -100,8 +104,9 @@ func Run(opts ...seigyoConfiguration) error {
 		}
 	}
 
-	coreMultipler := runtime.NumCPU() * 16
-	for i := 0; i < coreMultipler; i++ {
+	// TODO @droman: we should have an automatic scaler to adjust all the numbers
+	// coreMultipler := runtime.NumCPU()
+	for i := 0; i < 20; i++ {
 		addScheduler(config.queueSize)
 	}
 
@@ -110,8 +115,15 @@ func Run(opts ...seigyoConfiguration) error {
 	return nil
 }
 
+func Stop() {
+	cancelFunc()
+	if stopSignal != nil {
+		close(stopSignal)
+	}
+}
+
 func addScheduler(queueSize int) {
-	schedulers = append(schedulers, NewScheduler(queueSize, defaultThroughput))
+	schedulers = append(schedulers, NewScheduler(queueSize, 8, 1024*4))
 	atomic.AddInt32(&totalSchedulers, 1)
 }
 
@@ -123,5 +135,17 @@ func Dispatch(task AnonymousTask) {
 	} else {
 		atomic.StoreInt32(&dispatcher, 1)
 	}
-	schedulers[int(atomic.LoadInt32(&dispatcher)%total)].Push(task)
+	schedulers[int(atomic.LoadInt32(&dispatcher)%total)].
+		Push(task)
+}
+
+func DispatchN(tasks []AnonymousTask) {
+	total := atomic.LoadInt32(&totalSchedulers)
+	if atomic.LoadInt32(&dispatcher) < total {
+		atomic.AddInt32(&dispatcher, 1)
+	} else {
+		atomic.StoreInt32(&dispatcher, 1)
+	}
+	schedulers[int(atomic.LoadInt32(&dispatcher)%total)].
+		PushN(tasks)
 }

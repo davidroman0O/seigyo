@@ -1,6 +1,7 @@
 package buffer
 
 import (
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,9 +20,16 @@ func BenchmarkPushPop(b *testing.B) {
 	}
 }
 
+// go test -v -timeout=7s -count=1 -run TestBuffer
 func TestBuffer(t *testing.T) {
-	buffer := NewHierarchicalBuffer[int](1024, 1) // Adjust buffer size and initial buffers as needed
-	duration := 2 * time.Second
+
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	bufferSize := 1024
+	buffers := 4
+
+	buffer := NewHierarchicalBuffer[int](bufferSize, buffers) // Adjust buffer size and initial buffers as needed
+	duration := 5 * time.Second
 
 	done := make(chan bool)
 	var pushCount, popCount int
@@ -31,43 +39,71 @@ func TestBuffer(t *testing.T) {
 		basic = append(basic, i)
 	}
 
+	pushN := true
+
 	// Pushing in a separate goroutine
-	go func() {
-		for {
-			select {
-			case <-done:
-				return
-			default:
-				if err := buffer.PushN(basic); err != nil {
-					t.Log("Push error:", err)
+	if pushN {
+		for i := 0; i < runtime.NumCPU(); i++ {
+			// faster
+			go func() {
+				for {
+					select {
+					case <-done:
+						return
+					default:
+						if err := buffer.PushN(basic); err != nil {
+							t.Log("Push error:", err)
+							time.Sleep(1 * time.Millisecond) // Briefly sleep if no messages
+							continue
+						}
+						pushCount += len(basic)
+					}
+				}
+			}()
+		}
+	} else {
+		go func() {
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					if err := buffer.Push(1); err != nil {
+						t.Log("Push error:", err)
+						time.Sleep(1 * time.Millisecond) // Briefly sleep if no messages
+						continue
+					}
+					pushCount++
+				}
+			}
+		}()
+	}
+
+	start := time.Now()
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go func() {
+			for {
+				if !buffer.HasMessages() {
 					time.Sleep(1 * time.Millisecond) // Briefly sleep if no messages
 					continue
 				}
-				pushCount += len(basic)
+				items, err := buffer.PopN(bufferSize * 4)
+				if err != nil {
+					t.Log("Pop error:", err)
+					if time.Since(start) >= duration {
+						break
+					}
+					continue
+				}
+				popCount += len(items)
+				if time.Since(start) >= duration {
+					break
+				}
 			}
-		}
-	}()
-
-	start := time.Now()
-	for {
-		if !buffer.HasMessages() {
-			time.Sleep(1 * time.Millisecond) // Briefly sleep if no messages
-			continue
-		}
-		items, err := buffer.PopN(1014 * 16)
-		if err != nil {
-			t.Log("Pop error:", err)
-			if time.Since(start) >= duration {
-				break
-			}
-			continue
-		}
-		popCount += len(items)
-		if time.Since(start) >= duration {
-			break
-		}
+		}()
 	}
 
+	time.Sleep(duration)
 	close(done) // Signal to stop pushing
 
 	// buffer_test.go:73: Push operations: 116968448

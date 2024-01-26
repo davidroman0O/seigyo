@@ -14,48 +14,6 @@ type Buffer[T any] struct {
 	mu      sync.Mutex
 }
 
-// func (b *Buffer[T]) PopN(n int) ([]T, error) {
-// 	b.mu.Lock()
-// 	defer b.mu.Unlock()
-
-// 	var items []T
-// 	for i := 0; i < n; i++ {
-// 		if !b.full && b.head == b.tail {
-// 			// Stop if the buffer is empty
-// 			break
-// 		}
-// 		item := b.items[b.head]
-// 		b.items[b.head] = *new(T) // Zero the item (optional, for garbage collection)
-// 		b.head = (b.head + 1) % b.maxSize
-// 		b.full = false
-// 		items = append(items, item)
-// 	}
-
-// 	if len(items) == 0 {
-// 		return nil, errors.New("buffer is empty")
-// 	}
-
-//		return items, nil
-//	}
-// func (b *Buffer[T]) PopN(n int) ([]T, error) {
-// 	b.mu.Lock()
-// 	defer b.mu.Unlock()
-
-// 	if !b.full && b.head == b.tail {
-// 		return nil, errors.New("buffer is empty") // No items to pop
-// 	}
-
-// 	var items []T
-// 	for i := 0; i < n && (b.full || b.head != b.tail); i++ {
-// 		item := b.items[b.head]
-// 		b.head = (b.head + 1) % b.maxSize
-// 		b.full = false
-// 		items = append(items, item)
-// 	}
-
-// 	return items, nil
-// }
-
 func (b *Buffer[T]) PopN(n int) ([]T, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -120,11 +78,12 @@ func (b *Buffer[T]) Pop() (T, error) {
 	return item, nil
 }
 
+// Note: I have excellent performances with a hierarchial buffer
 type HierarchicalBuffer[T any] struct {
 	buffers   []*Buffer[T]
 	maxSize   int
 	readIndex int
-	mu        sync.Mutex
+	sync.Mutex
 }
 
 func NewHierarchicalBuffer[T any](bufferSize, initialBuffers int) *HierarchicalBuffer[T] {
@@ -139,8 +98,8 @@ func NewHierarchicalBuffer[T any](bufferSize, initialBuffers int) *HierarchicalB
 }
 
 func (hb *HierarchicalBuffer[T]) Push(item T) error {
-	hb.mu.Lock()
-	defer hb.mu.Unlock()
+	hb.Lock()
+	defer hb.Unlock()
 
 	for _, buffer := range hb.buffers {
 		if !buffer.IsFull() {
@@ -157,8 +116,8 @@ func (hb *HierarchicalBuffer[T]) Push(item T) error {
 func (hb *HierarchicalBuffer[T]) Pop() (T, error) {
 	var zero T
 
-	hb.mu.Lock()
-	defer hb.mu.Unlock()
+	hb.Lock()
+	defer hb.Unlock()
 
 	start := hb.readIndex
 	for {
@@ -179,8 +138,8 @@ func (hb *HierarchicalBuffer[T]) Pop() (T, error) {
 }
 
 func (hb *HierarchicalBuffer[T]) HasMessages() bool {
-	hb.mu.Lock()
-	defer hb.mu.Unlock()
+	hb.Lock()
+	defer hb.Unlock()
 
 	for _, buffer := range hb.buffers {
 		if buffer.head != buffer.tail || buffer.full {
@@ -191,8 +150,8 @@ func (hb *HierarchicalBuffer[T]) HasMessages() bool {
 }
 
 func (hb *HierarchicalBuffer[T]) FullEmptyBufferCount() (fullCount, emptyCount int) {
-	hb.mu.Lock()
-	defer hb.mu.Unlock()
+	hb.Lock()
+	defer hb.Unlock()
 
 	for _, buffer := range hb.buffers {
 		if buffer.full {
@@ -205,8 +164,8 @@ func (hb *HierarchicalBuffer[T]) FullEmptyBufferCount() (fullCount, emptyCount i
 }
 
 func (hb *HierarchicalBuffer[T]) BufferCount() int {
-	hb.mu.Lock()
-	defer hb.mu.Unlock()
+	hb.Lock()
+	defer hb.Unlock()
 
 	return len(hb.buffers)
 }
@@ -235,83 +194,45 @@ func (b *Buffer[T]) PushN(items []T) (int, error) {
 	return count, nil
 }
 
-// func (hb *HierarchicalBuffer[T]) PopN(n int) ([]T, error) {
-// 	var items []T
-
-// 	hb.mu.Lock()
-// 	defer hb.mu.Unlock()
-
-// 	start := hb.readIndex
-// 	for n > 0 {
-// 		buffer := hb.buffers[hb.readIndex]
-// 		popped, err := buffer.PopN(n)
-// 		if err == nil {
-// 			items = append(items, popped...)
-// 			n -= len(popped)
-// 		}
-
-// 		// Move to next buffer
-// 		hb.readIndex = (hb.readIndex + 1) % len(hb.buffers)
-
-// 		// If we have checked all buffers and found no items, break
-// 		if hb.readIndex == start && len(items) == 0 {
-// 			return nil, errors.New("all buffers are empty")
-// 		}
-// 	}
-
-//		return items, nil
-//	}
-// func (hb *HierarchicalBuffer[T]) PopN(n int) ([]T, error) {
-// 	hb.mu.Lock()
-// 	defer hb.mu.Unlock()
-
-// 	var items []T
-// 	start := hb.readIndex
-// 	for n > 0 {
-// 		buffer := hb.buffers[hb.readIndex]
-// 		popped, err := buffer.PopN(n)
-// 		if err == nil && len(popped) > 0 {
-// 			items = append(items, popped...)
-// 			n -= len(popped)
-// 		}
-
-// 		hb.readIndex = (hb.readIndex + 1) % len(hb.buffers)
-
-// 		if hb.readIndex == start && len(items) == 0 {
-// 			return nil, errors.New("all buffers are empty")
-// 		}
-// 	}
-
-// 	return items, nil
-// }
+var ErrAllBuffersEmpty = errors.New("all buffers are empty")
 
 func (hb *HierarchicalBuffer[T]) PopN(n int) ([]T, error) {
-	hb.mu.Lock()
-	defer hb.mu.Unlock()
+	hb.Lock()
+	defer hb.Unlock()
 
 	var items []T
+	totalNeeded := n
 	start := hb.readIndex
-	for n > 0 {
+	didCycle := false
+
+	for totalNeeded > 0 {
 		buffer := hb.buffers[hb.readIndex]
-		popped, err := buffer.PopN(n)
-		if err == nil && len(popped) > 0 {
+		popped, err := buffer.PopN(totalNeeded)
+		if err == nil {
 			items = append(items, popped...)
-			n -= len(popped)
+			totalNeeded -= len(popped)
 		}
 
 		hb.readIndex = (hb.readIndex + 1) % len(hb.buffers)
 
-		if hb.readIndex == start && len(items) == 0 {
-			return nil, errors.New("all buffers are empty")
+		if hb.readIndex == start {
+			if didCycle {
+				break // Break if we've already cycled through all buffers once
+			}
+			didCycle = true
 		}
+	}
+
+	if len(items) == 0 {
+		return nil, ErrAllBuffersEmpty
 	}
 
 	return items, nil
 }
 
 func (hb *HierarchicalBuffer[T]) PushN(items []T) error {
-	hb.mu.Lock()
-	defer hb.mu.Unlock()
+	hb.Lock()
+	defer hb.Unlock()
 
 	for len(items) > 0 {
 		for _, buffer := range hb.buffers {
@@ -336,11 +257,103 @@ func (hb *HierarchicalBuffer[T]) PushN(items []T) error {
 	return nil
 }
 
+// func (b *Buffer[T]) PopN(n int) ([]T, error) {
+// 	b.mu.Lock()
+// 	defer b.mu.Unlock()
+
+// 	var items []T
+// 	for i := 0; i < n; i++ {
+// 		if !b.full && b.head == b.tail {
+// 			// Stop if the buffer is empty
+// 			break
+// 		}
+// 		item := b.items[b.head]
+// 		b.items[b.head] = *new(T) // Zero the item (optional, for garbage collection)
+// 		b.head = (b.head + 1) % b.maxSize
+// 		b.full = false
+// 		items = append(items, item)
+// 	}
+
+// 	if len(items) == 0 {
+// 		return nil, errors.New("buffer is empty")
+// 	}
+
+//		return items, nil
+//	}
+// func (b *Buffer[T]) PopN(n int) ([]T, error) {
+// 	b.mu.Lock()
+// 	defer b.mu.Unlock()
+
+// 	if !b.full && b.head == b.tail {
+// 		return nil, errors.New("buffer is empty") // No items to pop
+// 	}
+
+// 	var items []T
+// 	for i := 0; i < n && (b.full || b.head != b.tail); i++ {
+// 		item := b.items[b.head]
+// 		b.head = (b.head + 1) % b.maxSize
+// 		b.full = false
+// 		items = append(items, item)
+// 	}
+
+// 	return items, nil
+// }
+
 // func (hb *HierarchicalBuffer[T]) PopN(n int) ([]T, error) {
 // 	var items []T
 
-// 	hb.mu.Lock()
-// 	defer hb.mu.Unlock()
+// 	hb.Lock()
+// 	defer hb.Unlock()
+
+// 	start := hb.readIndex
+// 	for n > 0 {
+// 		buffer := hb.buffers[hb.readIndex]
+// 		popped, err := buffer.PopN(n)
+// 		if err == nil {
+// 			items = append(items, popped...)
+// 			n -= len(popped)
+// 		}
+
+// 		// Move to next buffer
+// 		hb.readIndex = (hb.readIndex + 1) % len(hb.buffers)
+
+// 		// If we have checked all buffers and found no items, break
+// 		if hb.readIndex == start && len(items) == 0 {
+// 			return nil, errors.New("all buffers are empty")
+// 		}
+// 	}
+
+//		return items, nil
+//	}
+// func (hb *HierarchicalBuffer[T]) PopN(n int) ([]T, error) {
+// 	hb.Lock()
+// 	defer hb.Unlock()
+
+// 	var items []T
+// 	start := hb.readIndex
+// 	for n > 0 {
+// 		buffer := hb.buffers[hb.readIndex]
+// 		popped, err := buffer.PopN(n)
+// 		if err == nil && len(popped) > 0 {
+// 			items = append(items, popped...)
+// 			n -= len(popped)
+// 		}
+
+// 		hb.readIndex = (hb.readIndex + 1) % len(hb.buffers)
+
+// 		if hb.readIndex == start && len(items) == 0 {
+// 			return nil, errors.New("all buffers are empty")
+// 		}
+// 	}
+
+// 	return items, nil
+// }
+
+// func (hb *HierarchicalBuffer[T]) PopN(n int) ([]T, error) {
+// 	var items []T
+
+// 	hb.Lock()
+// 	defer hb.Unlock()
 
 // 	for n > 0 && hb.readIndex < len(hb.buffers) {
 // 		popped, err := hb.buffers[hb.readIndex].PopN(n)

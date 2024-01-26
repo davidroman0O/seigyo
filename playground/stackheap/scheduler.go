@@ -5,12 +5,7 @@ import (
 	"runtime"
 	"sync/atomic"
 
-	"github.com/davidroman0O/seigyo/playground/stackheap/ringbuffer"
-)
-
-const (
-	defaultThroughput = 512
-	batchSize         = 1024 * 4
+	"github.com/davidroman0O/seigyo/playground/stackheap/buffer"
 )
 
 const (
@@ -35,21 +30,28 @@ type AnonymousTask any
 
 // Scheduler manages task execution
 type Scheduler struct {
-	state             int32 // state
-	tag               int32
-	targetThroughput  int64
+	state            int32 // state
+	tag              int32
+	targetThroughput int64
+
+	queueSize      int
+	initialBuffers int
+
 	currentThroughput int64
-	taskQueue         *ringbuffer.CircularBuffer[interface{}]
+	taskQueue         *buffer.HierarchicalBuffer[interface{}]
 }
 
 // NewScheduler creates a new Scheduler with references to other schedulers for work stealing
 func NewScheduler(
 	queueSize int,
+	initialBuffers int,
 	targetThroughput int64,
 ) *Scheduler {
 	return &Scheduler{
 		targetThroughput: targetThroughput,
-		taskQueue:        ringbuffer.NewCircularBuffer[interface{}](queueSize),
+		initialBuffers:   initialBuffers,
+		queueSize:        queueSize,
+		taskQueue:        buffer.NewHierarchicalBuffer[interface{}](queueSize, initialBuffers),
 	}
 }
 
@@ -68,9 +70,9 @@ func (s *Scheduler) Stop() {
 // Push adds a task to the scheduler
 func (s *Scheduler) Push(task AnonymousTask) {
 	switch task.(type) {
-	case LongWork, ShortWork:
-		if err := s.taskQueue.Enqueue(task); err != nil {
-			fmt.Println(err)
+	case LongWork, ShortWork: // i have plan for other types
+		if err := s.taskQueue.Push(task); err != nil {
+			fmt.Println("is full", err)
 		}
 		if atomic.CompareAndSwapInt32(&s.state, stateIdle, stateRunning) {
 			go func() {
@@ -83,9 +85,31 @@ func (s *Scheduler) Push(task AnonymousTask) {
 	}
 }
 
+func (s *Scheduler) PushN(tasks []AnonymousTask) {
+	ourTypes := []interface{}{}
+	for i := 0; i < len(tasks); i++ {
+		switch msg := tasks[i].(type) {
+		case LongWork, ShortWork:
+			ourTypes = append(ourTypes, tasks[i])
+		default:
+			fmt.Println("not a managed task", msg)
+		}
+	}
+	if err := s.taskQueue.PushN(ourTypes); err != nil {
+		fmt.Println("is full", err)
+	}
+	if atomic.CompareAndSwapInt32(&s.state, stateIdle, stateRunning) {
+		go func() {
+			s.process()
+			atomic.StoreInt32(&s.state, stateIdle)
+		}()
+	}
+}
+
 func (s *Scheduler) process() {
 	var count int64
 	var items []interface{}
+	// var empty bool
 	var err error
 	for atomic.LoadInt32(&s.state) != stateStopped {
 		if count > s.targetThroughput {
@@ -93,15 +117,19 @@ func (s *Scheduler) process() {
 			runtime.Gosched()
 		}
 		count++
-		if s.taskQueue.IsEmpty() {
-			return // it will put to idle again
-		}
-		if items, _, err = s.taskQueue.DequeueN(batchSize); err != nil {
-			// TODO @droman: test if its even possible
-			fmt.Println(err)
+		if items, err = s.taskQueue.PopN(s.queueSize); err != nil {
+			if err == buffer.ErrAllBuffersEmpty {
+				count = s.targetThroughput + 1
+				continue
+			}
+			fmt.Println("can't popN ", err)
 			return
 		}
 		for _, item := range items {
+			if item == nil {
+				fmt.Println("item is nil", item)
+				continue
+			}
 			switch item.(type) {
 			case ShortWork:
 				task := item.(ShortWork)
