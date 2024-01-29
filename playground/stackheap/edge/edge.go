@@ -80,7 +80,7 @@ func NewAccumulator[T any]() *Accumulator[T] {
 					runtime.Gosched()
 					continue
 				}
-				items, err := e.buffer.PopN(1024)
+				items, err := e.buffer.PopN(1024 * 2)
 				if err != nil {
 					fmt.Println(err)
 					continue

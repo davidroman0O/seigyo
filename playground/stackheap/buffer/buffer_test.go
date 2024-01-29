@@ -20,6 +20,124 @@ func BenchmarkPushPop(b *testing.B) {
 	}
 }
 
+// go test -v -timeout=7s -count=1 -run TestBufferTicker
+// It seems that using the microseconds + goshed is increasing my ops from 30M to 45M+
+// I think I need to rethink my model to have an accumulator of msg in front of a buffer
+// like 1 acc to x pushers that will be consumed by y actors
+// I need to make a system that autoregulate their amount per core and per thoughput to avoid looping on empty messages
+func TestBufferTicker(t *testing.T) {
+
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	bufferSize := 1024
+	buffers := 4
+
+	buffer := NewHierarchicalBuffer[int](bufferSize, buffers) // Adjust buffer size and initial buffers as needed
+	duration := 5 * time.Second
+
+	done := make(chan bool)
+	var pushCount, popCount int
+
+	basic := []int{}
+	for i := 0; i < 1024; i++ {
+		basic = append(basic, i)
+	}
+
+	pushN := true
+
+	start := time.Now()
+	// Pushing in a separate goroutine
+	if pushN {
+		for i := 0; i < runtime.NumCPU()*2; i++ {
+			// faster
+			go func() {
+				ticker := time.NewTicker(1 * time.Microsecond)
+				for {
+					select {
+					case <-ticker.C:
+						if err := buffer.PushN(basic); err != nil {
+							t.Log("Push error:", err)
+							time.Sleep(1 * time.Millisecond) // Briefly sleep if no messages
+							continue
+						}
+						pushCount += len(basic)
+						if time.Since(start) >= duration {
+							ticker.Stop()
+							break
+						}
+						runtime.Gosched()
+					}
+				}
+			}()
+		}
+	} else {
+		for i := 0; i < runtime.NumCPU()*2; i++ {
+			go func() {
+				ticker := time.NewTicker(1 * time.Microsecond)
+				for {
+					select {
+					case <-ticker.C:
+						if err := buffer.Push(1); err != nil {
+							t.Log("Push error:", err)
+							time.Sleep(1 * time.Millisecond) // Briefly sleep if no messages
+							continue
+						}
+						pushCount++
+						if time.Since(start) >= duration {
+							ticker.Stop()
+							break
+						}
+						runtime.Gosched()
+					}
+				}
+			}()
+		}
+	}
+
+	for i := 0; i < runtime.NumCPU()*1; i++ {
+		go func() {
+			for {
+				tickerPop := time.NewTicker(1 * time.Microsecond)
+				select {
+				case <-tickerPop.C:
+					if !buffer.HasMessages() {
+						time.Sleep(1 * time.Microsecond) // Briefly sleep if no messages
+						continue
+					}
+					items, err := buffer.PopN(bufferSize * 6)
+					if err != nil {
+						// t.Log("Pop error:", err)
+						if time.Since(start) >= duration {
+							tickerPop.Stop()
+							break
+						}
+						continue
+					}
+					popCount += len(items)
+					if time.Since(start) >= duration {
+						tickerPop.Stop()
+						break
+					}
+					runtime.Gosched()
+				}
+			}
+		}()
+	}
+
+	time.Sleep(duration)
+	close(done) // Signal to stop pushing
+
+	// buffer_test.go:73: Push operations: 116968448
+	// buffer_test.go:74: Pop operations: 109495776
+	// buffer_test.go:75: Push throughput: 58484224 ops/sec
+	// buffer_test.go:76: Pop throughput: 54747888 ops/sec
+
+	t.Logf("Push operations: %d", pushCount)
+	t.Logf("Pop operations: %d", popCount)
+	t.Logf("Push throughput: %d ops/sec", pushCount/int(duration.Seconds()))
+	t.Logf("Pop throughput: %d ops/sec", popCount/int(duration.Seconds()))
+}
+
 // go test -v -timeout=7s -count=1 -run TestBuffer
 func TestBuffer(t *testing.T) {
 
