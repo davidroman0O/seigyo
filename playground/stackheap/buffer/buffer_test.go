@@ -20,6 +20,81 @@ func BenchmarkPushPop(b *testing.B) {
 	}
 }
 
+// go test -v -timeout=30s -count=1 -run TestBufferProducerConsumer
+// buffer_test.go:85: Push operations: 2993054720
+// buffer_test.go:86: Pop operations: 1011866624
+// buffer_test.go:87: Push throughput: 598631219 ops/sec
+// buffer_test.go:88: Pop throughput: 202374144 ops/sec
+// update:
+// buffer_test.go:87: Push operations: 5171462144
+// buffer_test.go:88: Pop operations: 1883049984
+// buffer_test.go:89: Push throughput: 1034341580 ops/sec
+// buffer_test.go:90: Pop throughput: 376617984 ops/sec
+func TestBufferProducerConsumer(t *testing.T) {
+	runtime.GOMAXPROCS(runtime.NumCPU())
+	bufferSize := 1024
+	buffers := 4
+	duration := 5 * time.Second
+	var pushCount, popCount int
+
+	basic := []interface{}{}
+	for i := 0; i < 1024; i++ {
+		basic = append(basic, i)
+	}
+
+	trigger := make(chan bool)
+
+	mpmc := []*ProducerConsumer[any]{}
+
+	// I conclude that i need to have multiple smaller buffers (of buffers) which produce and consume
+	// I should now wrap that concept into another wrapper of PC that can increase and decrease
+	// Also it should have channels to dynamically adjust depending of the op/s
+
+	// 16 core and 32 logical
+	for idx := 0; idx < runtime.NumCPU()*100; idx++ {
+		buffer := NewProducerConsumer[any](bufferSize, buffers, bufferSize*2)
+		mpmc = append(mpmc, buffer)
+		for i := 0; i < runtime.NumCPU(); i++ {
+			// producer
+			go func(pc *ProducerConsumer[any]) {
+				for {
+					select {
+					case <-trigger:
+						// Triggered, do something
+						return
+					default:
+						pc.producer <- basic
+						pushCount += len(basic)
+					}
+				}
+			}(buffer)
+		}
+		for i := 0; i < runtime.NumCPU(); i++ {
+			// consumer
+			go func(pc *ProducerConsumer[any]) {
+				for {
+					select {
+					case <-trigger:
+						// Triggered, do something
+						return
+					default:
+						popCount += len(<-pc.consumer)
+					}
+				}
+			}(buffer)
+		}
+	}
+
+	time.Sleep(duration)
+	// Trigger the channel
+	trigger <- true
+
+	t.Logf("Push operations: %d", pushCount)
+	t.Logf("Pop operations: %d", popCount)
+	t.Logf("Push throughput: %d ops/sec", pushCount/int(duration.Seconds()))
+	t.Logf("Pop throughput: %d ops/sec", popCount/int(duration.Seconds()))
+}
+
 // go test -v -timeout=7s -count=1 -run TestBufferTicker
 // It seems that using the microseconds + goshed is increasing my ops from 30M to 45M+
 // I think I need to rethink my model to have an accumulator of msg in front of a buffer
@@ -35,7 +110,6 @@ func TestBufferTicker(t *testing.T) {
 	buffer := NewHierarchicalBuffer[int](bufferSize, buffers) // Adjust buffer size and initial buffers as needed
 	duration := 5 * time.Second
 
-	done := make(chan bool)
 	var pushCount, popCount int
 
 	basic := []int{}
@@ -65,7 +139,7 @@ func TestBufferTicker(t *testing.T) {
 							ticker.Stop()
 							break
 						}
-						runtime.Gosched()
+						// runtime.Gosched()
 					}
 				}
 			}()
@@ -94,6 +168,8 @@ func TestBufferTicker(t *testing.T) {
 		}
 	}
 
+	withoutElements := 0
+
 	for i := 0; i < runtime.NumCPU()*1; i++ {
 		go func() {
 			for {
@@ -107,6 +183,7 @@ func TestBufferTicker(t *testing.T) {
 					items, err := buffer.PopN(bufferSize * 6)
 					if err != nil {
 						// t.Log("Pop error:", err)
+						withoutElements++
 						if time.Since(start) >= duration {
 							tickerPop.Stop()
 							break
@@ -118,20 +195,20 @@ func TestBufferTicker(t *testing.T) {
 						tickerPop.Stop()
 						break
 					}
-					runtime.Gosched()
+					// runtime.Gosched()
 				}
 			}
 		}()
 	}
 
 	time.Sleep(duration)
-	close(done) // Signal to stop pushing
 
 	// buffer_test.go:73: Push operations: 116968448
 	// buffer_test.go:74: Pop operations: 109495776
 	// buffer_test.go:75: Push throughput: 58484224 ops/sec
 	// buffer_test.go:76: Pop throughput: 54747888 ops/sec
 
+	t.Logf("Nothing operations: %d", withoutElements)
 	t.Logf("Push operations: %d", pushCount)
 	t.Logf("Pop operations: %d", popCount)
 	t.Logf("Push throughput: %d ops/sec", pushCount/int(duration.Seconds()))

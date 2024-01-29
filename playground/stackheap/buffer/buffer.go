@@ -1,8 +1,13 @@
 package buffer
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"runtime"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 type Buffer[T any] struct {
@@ -255,6 +260,62 @@ func (hb *HierarchicalBuffer[T]) PushN(items []T) error {
 	}
 
 	return nil
+}
+
+// Producer and Consumer data structure to simplify the storage and process of messages
+type ProducerConsumer[T any] struct {
+	context.Context
+	buffer   *HierarchicalBuffer[T]
+	producer chan []T
+	consumer chan []T
+	total    int32
+}
+
+func NewProducerConsumer[T any](size, buffers, pop int) *ProducerConsumer[T] {
+	e := &ProducerConsumer[T]{
+		Context:  context.Background(),
+		buffer:   NewHierarchicalBuffer[T](size, buffers),
+		producer: make(chan []T, size),
+		consumer: make(chan []T, size),
+	}
+	// from what i've read and understood, that 1us of delay to accumulate data and then goshed make it super fast cause the other goroutine can have time to push
+	go func() {
+		tickerPush := time.NewTicker(1 * time.Nanosecond)
+		tickerPop := time.NewTicker(1 * time.Nanosecond)
+		// note: i could just use accumulator and not edge, simply because i could accumulate data to be processed in batches
+		// big batches > (items or small arrays)
+		// also when the buffer is not big, it could reduce the ticker or give more control to the dev
+		// tickerPop.Reset()
+		defer tickerPop.Stop()
+		for {
+			select {
+			case <-tickerPush.C:
+				data := <-e.producer
+				atomic.AddInt32(&e.total, int32(len(data)))
+				if err := e.buffer.PushN(data); err != nil {
+					fmt.Println(err)
+				}
+				runtime.Gosched()
+			case <-tickerPop.C:
+				if atomic.LoadInt32(&e.total) == 0 {
+					runtime.Gosched()
+					continue
+				}
+				items, err := e.buffer.PopN(pop)
+				if err != nil {
+					fmt.Println(err)
+					continue
+				}
+				atomic.StoreInt32(&e.total, atomic.LoadInt32(&e.total)-int32(len(items)))
+				e.consumer <- items
+				runtime.Gosched()
+			case <-e.Context.Done():
+				fmt.Println("done")
+				return // Exit the function when context is cancelled
+			}
+		}
+	}()
+	return e
 }
 
 // func (b *Buffer[T]) PopN(n int) ([]T, error) {
