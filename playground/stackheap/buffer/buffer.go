@@ -49,6 +49,30 @@ func (b *Buffer[T]) IsFull() bool {
 	return b.full
 }
 
+func (b *Buffer[T]) PushN(items []T) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	count := 0
+	for _, item := range items {
+		if b.full {
+			break
+		}
+		b.items[b.tail] = item
+		b.tail = (b.tail + 1) % b.maxSize
+		count++
+		if b.tail == b.head {
+			b.full = true
+		}
+	}
+
+	if count == 0 {
+		return 0, errors.New("buffer is full")
+	}
+
+	return count, nil
+}
+
 func (b *Buffer[T]) Push(item T) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -173,30 +197,6 @@ func (hb *HierarchicalBuffer[T]) BufferCount() int {
 	defer hb.Unlock()
 
 	return len(hb.buffers)
-}
-
-func (b *Buffer[T]) PushN(items []T) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	count := 0
-	for _, item := range items {
-		if b.full {
-			break
-		}
-		b.items[b.tail] = item
-		b.tail = (b.tail + 1) % b.maxSize
-		count++
-		if b.tail == b.head {
-			b.full = true
-		}
-	}
-
-	if count == 0 {
-		return 0, errors.New("buffer is full")
-	}
-
-	return count, nil
 }
 
 var ErrAllBuffersEmpty = errors.New("all buffers are empty")

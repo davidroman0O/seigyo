@@ -65,6 +65,7 @@ func TestBufferProducerConsumer(t *testing.T) {
 					default:
 						pc.producer <- basic
 						pushCount += len(basic)
+						runtime.Gosched()
 					}
 				}
 			}(buffer)
@@ -79,6 +80,7 @@ func TestBufferProducerConsumer(t *testing.T) {
 						return
 					default:
 						popCount += len(<-pc.consumer)
+						runtime.Gosched()
 					}
 				}
 			}(buffer)
