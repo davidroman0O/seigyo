@@ -1,3 +1,7 @@
+# Work in progress
+
+I'm trying to figure how i can integrate an actor-model implementation with my notion of stakable `Process`. It has to be efficient and performant, i'm doing lot of tests in the playground!
+
 # Seigyo
 
 Seigyo, deriving from the Japanese word for "Control" (制御), is a Go module meticulously crafted to orchestrate and manage the lifecycle of concurrent processes. It ensures smooth communication and control across various application workflows, providing a robust foundation for building reliable concurrent applications.
