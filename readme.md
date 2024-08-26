@@ -1,6 +1,8 @@
-# Work in progress
+# Abandonned 
 
-I'm trying to figure how i can integrate an actor-model implementation with my notion of stakable `Process`. It has to be efficient and performant, i'm doing lot of tests in the playground!
+Working on [gronos](https://github.com/davidroman0O/gronos/) instead
+
+It was a good experiment 
 
 # Seigyo
 
